@@ -2,7 +2,7 @@
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 
 class Model(BaseModel):
@@ -47,7 +47,17 @@ class Listing(RentalDetails):
     area_m2: float | None = Field(default=None, gt=0)
     available_from: date | Literal["asap"] | None = None
     distance_to_center_km: float | None = Field(default=None, ge=0)
+    published_at: date | None = None
+    updated_at: date | None = None
+    photos: list[HttpUrl] = Field(default_factory=list)
     link: HttpUrl
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_legacy_room_category(cls, value):
+        if isinstance(value, dict) and "is_room_rent" not in value:
+            value = value | {"is_room_rent": "/byt/pokoj/" in str(value.get("link", ""))}
+        return value
 
 
 class StoredAd(Model):
@@ -56,7 +66,14 @@ class StoredAd(Model):
     notified: bool = Field(strict=True)
 
 
+class CachedExtraction(Model):
+    fingerprint: str = Field(min_length=64, max_length=64)
+    result: RentalDetails
+
+
 class Database(Model):
     schema_version: Literal[1] = 1
     initialized: bool = Field(strict=True)
     ads: dict[str, StoredAd]
+    excluded_ids: list[str] = Field(default_factory=list)
+    parsed_results: dict[str, CachedExtraction] = Field(default_factory=dict)

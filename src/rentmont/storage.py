@@ -5,7 +5,7 @@ import tempfile
 
 from pydantic import TypeAdapter
 
-from .models import Database, Listing, StoredAd
+from .models import CachedExtraction, Database, Listing, RentalDetails, StoredAd
 
 
 class StorageError(RuntimeError):
@@ -42,17 +42,49 @@ class JsonStore:
         return self._state.initialized
 
     def contains(self, ident: str) -> bool:
-        return ident in self._state.ads
+        return (ident in self._state.ads or ident in self._state.excluded_ids
+                or ident in self._state.parsed_results)
 
     def pending(self) -> list[tuple[str, StoredAd]]:
         return [(ident, ad.model_copy(deep=True))
-                for ident, ad in sorted(self._state.ads.items()) if not ad.notified]
+                for ident, ad in sorted(self._state.ads.items())
+                if not ad.notified and not ad.listing.is_room_rent
+                and ident not in self._state.excluded_ids]
+
+    def get_ad(self, ident: str) -> StoredAd | None:
+        ad = self._state.ads.get(ident)
+        return ad.model_copy(deep=True) if ad is not None else None
+
+    def get_extraction(self, ident: str) -> CachedExtraction | None:
+        cached = self._state.parsed_results.get(ident)
+        return cached.model_copy(deep=True) if cached is not None else None
+
+    def cache_extraction(self, ident: str, fingerprint: str, result: RentalDetails) -> None:
+        cached = CachedExtraction(fingerprint=fingerprint, result=result)
+        if self._state.parsed_results.get(ident) == cached:
+            return
+        state = self._state.model_copy(deep=True)
+        state.parsed_results[ident] = cached.model_copy(deep=True)
+        self._commit(state)
 
     def add(self, ident: str, ad: StoredAd) -> None:
-        if self.contains(ident):
+        if ident not in self._state.ads:
+            self.save_ad(ident, ad)
+
+    def save_ad(self, ident: str, ad: StoredAd) -> None:
+        if self._state.ads.get(ident) == ad and ident not in self._state.excluded_ids:
             return
         state = self._state.model_copy(deep=True)
         state.ads[ident] = ad.model_copy(deep=True)
+        if ident in state.excluded_ids:
+            state.excluded_ids.remove(ident)
+        self._commit(state)
+
+    def exclude(self, ident: str) -> None:
+        if ident in self._state.excluded_ids:
+            return
+        state = self._state.model_copy(deep=True)
+        state.excluded_ids.append(ident)
         self._commit(state)
 
     def mark_notified(self, ident: str) -> None:
@@ -61,12 +93,15 @@ class JsonStore:
         self._commit(state)
 
     def mark_initialized(self) -> None:
+        if self._state.initialized:
+            return
         state = self._state.model_copy(deep=True)
         state.initialized = True
         self._commit(state)
 
     def export_listings(self, path: Path) -> None:
-        listings = [ad.listing for _, ad in sorted(self._state.ads.items())]
+        listings = [ad.listing for ident, ad in sorted(self._state.ads.items())
+                    if not ad.listing.is_room_rent and ident not in self._state.excluded_ids]
         atomic_write(path, TypeAdapter(list[Listing]).dump_json(listings, indent=2))
 
     def _commit(self, state: Database) -> None:

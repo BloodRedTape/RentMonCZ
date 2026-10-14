@@ -1,9 +1,27 @@
 """OpenAI structured payment extraction."""
+import hashlib
 import json
 
 from openai import OpenAI
 
 from .models import RentalDetails
+
+
+EXTRACTION_FIELDS = (
+    "advert_name", "advert_description", "price_czk", "price_note",
+    "cost_of_living", "commission", "refundable_deposit",
+    "tenant_not_pay_commission", "price_unit_cb", "price_currency_cb",
+    "category_sub_cb", "usable_area", "floor_area", "ready_date",
+)
+
+
+def extraction_content(detail: dict) -> str:
+    return json.dumps({key: detail.get(key) for key in EXTRACTION_FIELDS},
+                      ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def extraction_fingerprint(detail: dict) -> str:
+    return hashlib.sha256(extraction_content(detail).encode("utf-8")).hexdigest()
 
 
 PROMPT = """Extract rental payments in CZK from Czech real estate data.
@@ -46,11 +64,7 @@ Use price_czk for rent only when the listing doesn't indicate a bundled total.
 
 def extract(ai: OpenAI, model: str, detail: dict) -> RentalDetails:
     # Send only relevant fields, not seller contacts, images or unrelated metadata.
-    keys = ("advert_name", "advert_description", "price_czk", "price_note",
-            "cost_of_living", "commission", "refundable_deposit",
-            "tenant_not_pay_commission", "price_unit_cb", "price_currency_cb",
-            "category_sub_cb", "usable_area", "floor_area", "ready_date")
-    content = json.dumps({k: detail.get(k) for k in keys}, ensure_ascii=False)
+    content = extraction_content(detail)
     result = ai.chat.completions.parse(
         model=model,
         messages=[{"role": "system", "content": PROMPT},
