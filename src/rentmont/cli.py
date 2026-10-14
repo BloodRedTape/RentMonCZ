@@ -8,9 +8,8 @@ from openai import OpenAI
 from pydantic import ValidationError
 
 from .config import Settings
-from .service import scan
+from .service import scan, deliver
 from .storage import JsonStore, StorageError
-from .telegram import send_pending
 
 LOG = logging.getLogger(__name__)
 
@@ -18,6 +17,7 @@ LOG = logging.getLogger(__name__)
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sreality apartment rental monitor")
     parser.add_argument("--once", action="store_true", help="Run one scan and exit")
+    parser.add_argument("--reextract", action="store_true", help="Reparse current listings once, ignoring saved facts")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -28,9 +28,9 @@ def main() -> None:
         fields = ", ".join(".".join(map(str, e["loc"])) for e in exc.errors())
         parser.error(f"Check .env configuration: {fields}")
     try:
-        store = JsonStore(settings.data_dir / "db.json")
+        store = JsonStore(settings.data_dir)
     except (OSError, ValidationError, StorageError) as exc:
-        parser.error(f"Cannot load/create {settings.data_dir / 'db.json'} ({type(exc).__name__}); file was not reset")
+        parser.error(f"Cannot load/create {settings.data_dir / 'state.json'} ({type(exc).__name__}); file was not reset")
     try:
         with httpx.Client(timeout=30, follow_redirects=True,
                           headers={"User-Agent": "RentMont/1.0"}) as client, OpenAI(
@@ -38,18 +38,18 @@ def main() -> None:
         ) as ai:
             while True:
                 start = time.monotonic()
-                success = False
+                stats = None
                 try:
-                    success = scan(client, ai, store, settings)
+                    stats = scan(client, ai, store, settings, reextract=args.reextract)
+                    args.reextract = False
                 except StorageError:
                     raise
                 except Exception as exc:
                     LOG.error("Scan failed (%s); retry next cycle", type(exc).__name__)
-                delivered = send_pending(client, store,
-                                         settings.telegram_bot_token.get_secret_value(),
-                                         settings.telegram_chat_id)
+                # Don't send stale queued listings if the search itself failed.
+                delivered = stats is not None and deliver(client, store, settings, stats.listings)
                 if args.once:
-                    if not success or not delivered:
+                    if stats is None or not stats.succeeded or not delivered:
                         raise SystemExit(1)
                     break
                 time.sleep(max(0, settings.poll_seconds - (time.monotonic() - start)))

@@ -1,120 +1,117 @@
-"""Cache regression tests (no network or API keys)."""
+"""Independent maps and scan/delivery policy, without network."""
 import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from rentmont.config import Settings
-from rentmont.extraction import extraction_fingerprint
-from rentmont.models import Listing, RentalDetails, StoredAd
-from rentmont.service import scan
+from rentmont.models import NotificationStatus
+from rentmont.service import scan, deliver
 from rentmont.storage import JsonStore
+from tests.helpers import api_ad, config, rental
 
 
-def detail():
-    return {"hash_id": 123, "advert_name": "Apartment", "advert_description": "Rent 12000 CZK",
-            "category_main_cb": {"value": 1}, "category_type_cb": {"value": 2},
-            "category_sub_cb": {"name": "1+kk"}, "price_czk": 12000,
-            "locality": {"district_id": 72, "city_seo_name": "brno"}}
+class ScanTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name)
+        self.store = JsonStore(self.path)
+        self.settings = config(self.path)
+        for name in ("rentmont.service.time.sleep",):
+            patcher = patch(name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
+    def run_scan(self, detail=None, facts=None, reextract=False, error=None):
+        detail = api_ad() if detail is None else detail
+        with patch("rentmont.service.search", return_value=[detail]), \
+             patch("rentmont.service.api_json", return_value={"result": detail}), \
+             patch("rentmont.service.extract", return_value=facts or rental(), side_effect=error) as extract:
+            stats = scan(None, None, self.store, self.settings, reextract=reextract)
+        return stats, extract.call_count
 
-def result(rent=12000, room=False):
-    return RentalDetails(rent_kc=rent, utilities_kc=None, comission_kc=None,
-                         deposit_kc=None, is_room_rent=room, area_m2=None, available_from=None)
+    def test_rejected_facts_survive_restart(self):
+        for facts in (rental(rent=None), rental(rent=15000), rental(room=True)):
+            with self.subTest(facts=facts):
+                self.run_scan(facts=facts, reextract=True)
+                self.store = JsonStore(self.path)
+                stats, calls = self.run_scan()
+                self.assertEqual(calls, 0)
+                self.assertEqual(stats.excluded, 1)
+                self.assertEqual(self.store.get_extraction("123").details, facts)
+                self.assertEqual(stats.listings, ())
 
+    def test_changed_input_requires_explicit_reextract(self):
+        self.run_scan(facts=rental(rent=None))
+        changed = api_ad() | {"advert_description": "Changed"}
+        stats, calls = self.run_scan(detail=changed)
+        self.assertEqual(calls, 0)
+        self.assertEqual(stats.excluded, 1)
+        stats, calls = self.run_scan(detail=changed, reextract=True)
+        self.assertEqual(calls, 1)
+        self.assertEqual(len(stats.listings), 1)
+        self.assertEqual(self.store.get_source("123").raw, changed)
 
-def config(path):
-    return Settings(openai_api_key="test", telegram_bot_token="test", telegram_chat_id="1",
-                    data_dir=path, notify_existing=True)
+    def test_failed_reextract_keeps_facts_but_blocks_delivery_and_export(self):
+        self.run_scan()
+        stats, _ = self.run_scan(reextract=True, error=RuntimeError("failed"))
+        self.assertFalse(stats.succeeded)
+        self.assertEqual(stats.listings, ())
+        self.assertEqual(self.store.get_extraction("123").details, rental())
+        self.assertEqual(json.loads((self.path / "listings.json").read_text()), [])
+        stats, calls = self.run_scan(reextract=True)
+        self.assertTrue(stats.succeeded)
+        self.assertEqual(calls, 1)
 
+    def test_metadata_refresh_and_no_resend(self):
+        stats, _ = self.run_scan()
+        with patch("rentmont.service.send_ad") as send:
+            self.assertTrue(deliver(None, self.store, self.settings, stats.listings))
+            changed = api_ad() | {"edited": "2026-10-15"}
+            stats, calls = self.run_scan(detail=changed)
+            self.assertTrue(deliver(None, self.store, self.settings, stats.listings))
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(calls, 0)
+        self.assertEqual(stats.listings[0].source.updated_at.isoformat(), "2026-10-15")
+        self.assertEqual(self.store.get_notification("123").status, NotificationStatus.SENT)
 
-class CacheTests(unittest.TestCase):
-    def test_rejected_successes_are_cached_across_restart(self):
-        for parsed in (result(rent=None), result(rent=15000), result(room=True)):
-            with self.subTest(parsed=parsed), tempfile.TemporaryDirectory() as directory:
-                path = Path(directory)
-                store = JsonStore(path / "db.json")
-                with patch("rentmont.service.search", return_value=[detail()]), \
-                     patch("rentmont.service.api_json", return_value={"result": detail()}), \
-                     patch("rentmont.service.extract", return_value=parsed) as extract, \
-                     patch("rentmont.service.time.sleep"):
-                    self.assertTrue(scan(None, None, store, config(path)))
-                    store = JsonStore(store.path)
-                    self.assertTrue(scan(None, None, store, config(path)))
-                self.assertEqual(extract.call_count, 1)
-                self.assertEqual(store.get_extraction("123").result, parsed)
-                self.assertEqual(store.pending(), [])
-                self.assertEqual(json.loads((path / "listings.json").read_text()), [])
+    def test_delivery_retry(self):
+        stats, _ = self.run_scan()
+        with patch("rentmont.service.send_ad", side_effect=RuntimeError("timeout")):
+            self.assertFalse(deliver(None, self.store, self.settings, stats.listings))
+        self.assertIsNone(self.store.get_notification("123"))
+        with patch("rentmont.service.send_ad"):
+            self.assertTrue(deliver(None, self.store, self.settings, stats.listings))
+        self.assertIsNotNone(self.store.get_notification("123").sent_at)
 
-    def test_changed_input_can_pass_previously_failed_filter(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)
-            store = JsonStore(path / "db.json")
-            revised = detail() | {"advert_description": "Monthly base rent is 12000 CZK"}
-            with patch("rentmont.service.search", return_value=[detail()]), \
-                 patch("rentmont.service.api_json", side_effect=[{"result": detail()}, {"result": revised}]), \
-                 patch("rentmont.service.extract", side_effect=[result(rent=None), result()]) as extract, \
-                 patch("rentmont.service.time.sleep"):
-                scan(None, None, store, config(path))
-                scan(None, None, store, config(path))
-            self.assertEqual(extract.call_count, 2)
-            self.assertEqual(len(store.pending()), 1)
-            self.assertEqual(store.get_ad("123").listing.rent_kc, 12000)
+    def test_baseline_and_missing(self):
+        self.settings = config(self.path, notify_existing=False)
+        self.run_scan()
+        self.assertEqual(self.store.get_notification("123").status, NotificationStatus.SUPPRESSED)
+        with patch("rentmont.service.search", return_value=[]):
+            stats = scan(None, None, self.store, self.settings)
+        self.assertEqual(stats.listings, ())
+        self.assertEqual(self.store.current_search_ids, frozenset())
+        self.assertIsNotNone(self.store.get_extraction("123"))
 
-    def test_metadata_changes_do_not_call_llm_or_resend(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)
-            store = JsonStore(path / "db.json")
-            revised = detail() | {"edited": "2026-10-15", "advert_images": [{"url": "https://example.com/photo.jpg"}]}
-            with patch("rentmont.service.search", return_value=[detail()]), \
-                 patch("rentmont.service.api_json", side_effect=[{"result": detail()}, {"result": revised}]), \
-                 patch("rentmont.service.extract", return_value=result()) as extract, \
-                 patch("rentmont.service.time.sleep"):
-                scan(None, None, store, config(path))
-                store.mark_notified("123")
-                scan(None, None, store, config(path))
-            self.assertEqual(extract.call_count, 1)
-            saved = store.get_ad("123")
-            self.assertEqual(saved.listing.updated_at.isoformat(), "2026-10-15")
-            self.assertEqual(len(saved.listing.photos), 1)
-            self.assertTrue(saved.notified)
-            self.assertEqual(store.pending(), [])
+    def test_source_filter_saves_raw_without_llm(self):
+        stats, calls = self.run_scan(detail=api_ad() | {"category_sub_cb": {"name": "Pokoj"}})
+        self.assertEqual(calls, 0)
+        self.assertEqual(stats.excluded, 1)
+        self.assertIsNotNone(self.store.get_source("123"))
+        self.assertIsNone(self.store.get_extraction("123"))
 
-    def test_failures_are_not_cached_and_can_retry(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)
-            store = JsonStore(path / "db.json")
-            with patch("rentmont.service.search", return_value=[detail()]), \
-                 patch("rentmont.service.api_json", return_value={"result": detail()}), \
-                 patch("rentmont.service.extract", side_effect=[RuntimeError("failed"), result()]) as extract, \
-                 patch("rentmont.service.time.sleep"):
-                self.assertFalse(scan(None, None, store, config(path)))
-                self.assertIsNone(store.get_extraction("123"))
-                self.assertTrue(scan(None, None, store, config(path)))
-            self.assertEqual(extract.call_count, 2)
+    def test_filter_recomputed_when_budget_changes(self):
+        self.run_scan(facts=rental(rent=13000))
+        self.settings = self.settings.model_copy(update={"max_rent_kc": 12500})
+        stats, calls = self.run_scan()
+        self.assertEqual(calls, 0)
+        self.assertEqual(stats.excluded, 1)
 
-    def test_legacy_ads_seed_cache_without_llm(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)
-            store = JsonStore(path / "db.json")
-            listing = Listing(**result().model_dump(), link="https://www.sreality.cz/")
-            store.add("123", StoredAd(title="Apartment", listing=listing, notified=True))
-            with patch("rentmont.service.search", return_value=[detail()]), \
-                 patch("rentmont.service.api_json", return_value={"result": detail()}), \
-                 patch("rentmont.service.extract") as extract, patch("rentmont.service.time.sleep"):
-                scan(None, None, store, config(path))
-            extract.assert_not_called()
-            self.assertEqual(store.get_extraction("123").result, result())
-            self.assertEqual(store.pending(), [])
-
-    def test_fingerprint_covers_only_llm_input(self):
-        original = extraction_fingerprint(detail())
-        self.assertEqual(original, extraction_fingerprint(detail() | {"edited": "2026-10-15"}))
-        self.assertEqual(original, extraction_fingerprint(detail() | {"advert_images": ["photo"]}))
-        self.assertNotEqual(original, extraction_fingerprint(detail() | {"advert_description": "Changed"}))
-        self.assertNotEqual(original, extraction_fingerprint(detail() | {"price_note": "Plus utilities"}))
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_failed_search_preserves_membership(self):
+        self.run_scan()
+        with patch("rentmont.service.search", side_effect=RuntimeError("network")):
+            with self.assertRaises(RuntimeError):
+                scan(None, None, self.store, self.settings)
+        self.assertEqual(self.store.current_search_ids, frozenset({"123"}))

@@ -1,11 +1,17 @@
-"""Single-process JSON storage. Invalid existing state is never reset silently."""
+"""Single-process repository: independent atomic files per listing."""
+from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 import tempfile
+from typing import TypeVar
 
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from .models import CachedExtraction, Database, Listing, RentalDetails, StoredAd
+from .models import (MonitorState, ExtractionRecord, Listing, NotificationRecord,
+                     NotificationStatus, RentalDetails, SourceRecord)
+
+T = TypeVar("T", bound=BaseModel)
 
 
 class StorageError(RuntimeError):
@@ -14,7 +20,6 @@ class StorageError(RuntimeError):
 
 def atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Same directory ensures replace stays on the same filesystem.
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temporary = Path(name)
     try:
@@ -27,87 +32,104 @@ def atomic_write(path: Path, content: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class JsonStore:
-    def __init__(self, path: Path):
-        self.path = path
-        if path.exists():
-            # Validation errors abort startup; never overwrite a corrupt database.
-            self._state = Database.model_validate_json(path.read_bytes())
-        else:
-            self._state = Database(initialized=False, ads={})
-            self._commit(self._state)
+    def __init__(self, directory: Path):
+        self.directory = directory
+        self.path = directory / "state.json"
+        self._state = self._read(self.path, MonitorState)
+        if self._state is None:
+            self._state = MonitorState()
+            self._write(self.path, self._state)
 
     @property
     def initialized(self) -> bool:
         return self._state.initialized
 
-    def contains(self, ident: str) -> bool:
-        return (ident in self._state.ads or ident in self._state.excluded_ids
-                or ident in self._state.parsed_results)
+    @property
+    def current_search_ids(self) -> frozenset[str]:
+        return self._state.current_search_ids
 
-    def pending(self) -> list[tuple[str, StoredAd]]:
-        return [(ident, ad.model_copy(deep=True))
-                for ident, ad in sorted(self._state.ads.items())
-                if not ad.notified and not ad.listing.is_room_rent
-                and ident not in self._state.excluded_ids]
+    def set_current_search(self, ids: set[str]) -> None:
+        for ident in ids:
+            self._listing_path(ident, "source.json")
+        self._commit(self._state.model_copy(update={"current_search_ids": frozenset(ids)}))
 
-    def get_ad(self, ident: str) -> StoredAd | None:
-        ad = self._state.ads.get(ident)
-        return ad.model_copy(deep=True) if ad is not None else None
+    def get_source(self, ident: str) -> SourceRecord | None:
+        path = self._listing_path(ident, "source.json")
+        record = self._read(path, SourceRecord)
+        if record is not None and str(record.raw["hash_id"]) != ident:
+            raise StorageError(f"Listing ID does not match directory: {path}")
+        return record
 
-    def get_extraction(self, ident: str) -> CachedExtraction | None:
-        cached = self._state.parsed_results.get(ident)
-        return cached.model_copy(deep=True) if cached is not None else None
+    def save_source(self, raw: dict) -> None:
+        ident = str(raw["hash_id"])
+        old = self.get_source(ident)
+        timestamp = now()
+        record = SourceRecord(raw=raw, first_seen_at=old.first_seen_at if old else timestamp,
+                              last_seen_at=timestamp)
+        self._write(self._listing_path(ident, "source.json"), record)
 
-    def cache_extraction(self, ident: str, fingerprint: str, result: RentalDetails) -> None:
-        cached = CachedExtraction(fingerprint=fingerprint, result=result)
-        if self._state.parsed_results.get(ident) == cached:
-            return
-        state = self._state.model_copy(deep=True)
-        state.parsed_results[ident] = cached.model_copy(deep=True)
-        self._commit(state)
+    def get_extraction(self, ident: str) -> ExtractionRecord | None:
+        return self._read(self._listing_path(ident, "extraction.json"), ExtractionRecord)
 
-    def add(self, ident: str, ad: StoredAd) -> None:
-        if ident not in self._state.ads:
-            self.save_ad(ident, ad)
+    def save_extraction(self, ident: str, details: RentalDetails) -> None:
+        self._write(self._listing_path(ident, "extraction.json"),
+                    ExtractionRecord(details=details, extracted_at=now()))
 
-    def save_ad(self, ident: str, ad: StoredAd) -> None:
-        if self._state.ads.get(ident) == ad and ident not in self._state.excluded_ids:
-            return
-        state = self._state.model_copy(deep=True)
-        state.ads[ident] = ad.model_copy(deep=True)
-        if ident in state.excluded_ids:
-            state.excluded_ids.remove(ident)
-        self._commit(state)
+    def get_notification(self, ident: str) -> NotificationRecord | None:
+        return self._read(self._listing_path(ident, "notification.json"), NotificationRecord)
 
-    def exclude(self, ident: str) -> None:
-        if ident in self._state.excluded_ids:
-            return
-        state = self._state.model_copy(deep=True)
-        state.excluded_ids.append(ident)
-        self._commit(state)
+    def mark_sent(self, ident: str) -> None:
+        self._write(self._listing_path(ident, "notification.json"),
+                    NotificationRecord(status=NotificationStatus.SENT, sent_at=now()))
 
-    def mark_notified(self, ident: str) -> None:
-        state = self._state.model_copy(deep=True)
-        state.ads[ident].notified = True
-        self._commit(state)
+    def suppress(self, ident: str) -> None:
+        if self.get_notification(ident) is None:
+            self._write(self._listing_path(ident, "notification.json"),
+                        NotificationRecord(status=NotificationStatus.SUPPRESSED))
 
     def mark_initialized(self) -> None:
-        if self._state.initialized:
-            return
-        state = self._state.model_copy(deep=True)
-        state.initialized = True
-        self._commit(state)
+        if not self.initialized:
+            self._commit(self._state.model_copy(update={"initialized": True}))
 
-    def export_listings(self, path: Path) -> None:
-        listings = [ad.listing for ident, ad in sorted(self._state.ads.items())
-                    if not ad.listing.is_room_rent and ident not in self._state.excluded_ids]
-        atomic_write(path, TypeAdapter(list[Listing]).dump_json(listings, indent=2))
-
-    def _commit(self, state: Database) -> None:
+    def export_listings(self, path: Path, listings: list[Listing]) -> None:
         try:
-            atomic_write(self.path, state.model_dump_json(indent=2).encode("utf-8"))
+            atomic_write(path, TypeAdapter(list[Listing]).dump_json(listings, indent=2))
         except OSError as exc:
-            raise StorageError(f"Cannot save state to {self.path}") from exc
-        # Keep memory unchanged if the write fails.
+            raise StorageError(f"Cannot export listings to {path}") from exc
+
+    def _listing_path(self, ident: str, filename: str) -> Path:
+        # Sreality IDs are numeric; never allow external IDs to escape DATA_DIR.
+        if not re.fullmatch(r"[0-9]+", ident):
+            raise StorageError("Expected a numeric Sreality ID")
+        directory = self.directory / ident
+        if directory.is_symlink():
+            raise StorageError(f"Listing directory must not be a symlink: {directory}")
+        return directory / filename
+
+    def _read(self, path: Path, model: type[T]) -> T | None:
+        try:
+            content = path.read_bytes()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise StorageError(f"Cannot read {path}") from exc
+        try:
+            return model.model_validate_json(content)
+        except ValidationError as exc:
+            raise StorageError(f"Invalid data in {path}; file was not reset") from exc
+
+    def _write(self, path: Path, record: BaseModel) -> None:
+        record = type(record).model_validate(record.model_dump())
+        try:
+            atomic_write(path, record.model_dump_json(indent=2).encode("utf-8"))
+        except OSError as exc:
+            raise StorageError(f"Cannot save {path}") from exc
+
+    def _commit(self, state: MonitorState) -> None:
+        self._write(self.path, state)
         self._state = state

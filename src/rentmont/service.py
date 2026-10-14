@@ -1,4 +1,4 @@
-"""Monitoring cycle: cache successful extraction separately from filtering."""
+"""Refresh source data, extract missing facts and evaluate current policy."""
 import logging
 import time
 
@@ -6,74 +6,85 @@ import httpx
 from openai import OpenAI
 
 from .config import Settings
-from .extraction import extract, extraction_fingerprint
-from .location import distance_to_center_km
-from .models import Listing, RentalDetails, StoredAd
-from .sreality import api_json, listing_dates, listing_link, listing_photos, matches, search
+from .extraction import extract
+from .filters import rental_rejection, source_rejection
+from .models import Listing, ScanStats
+from .sreality import api_json, search, source_listing
 from .storage import JsonStore, StorageError
+from .telegram import TelegramRejected, safe_description, send_ad
 
 LOG = logging.getLogger(__name__)
 
 
-def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings) -> bool:
+def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
+            listings: tuple[Listing, ...]) -> bool:
+    """Deliver this scan's eligible listings, remembering only successful sends."""
+    token = settings.telegram_bot_token.get_secret_value()
+    for listing in listings:
+        ident = listing.source.id
+        if store.get_notification(ident) is not None:
+            continue
+        try:
+            send_ad(client, token, settings.telegram_chat_id, listing)
+        except Exception as exc:
+            if isinstance(exc, TelegramRejected):
+                LOG.warning("Telegram rejected listing %s (code %s): %s; will retry",
+                            ident, exc.code, safe_description(exc.description, token))
+            else:
+                LOG.warning("Telegram delivery failed for listing %s (%s); will retry",
+                            ident, type(exc).__name__)
+            return False
+        store.mark_sent(ident)
+        time.sleep(1.1)
+    return True
+
+
+def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings,
+         *, reextract: bool = False) -> ScanStats:
     initial = not store.initialized
     ads = search(client, settings.district_id, settings.max_rent_kc)
-    failed = False
-    llm_calls = cache_hits = 0
+    store.set_current_search({str(ad["hash_id"]) for ad in ads})
+    counts = {"llm_calls": 0, "cache_hits": 0, "excluded": 0, "errors": 0}
+    listings = []
     for ad in ads:
         ident = str(ad["hash_id"])
         try:
-            # Fetch details even for known IDs to detect meaningful content changes.
             detail = api_json(client, f"estates/{ident}")["result"]
-            if not matches(detail, settings.district_id, settings.max_rent_kc):
-                store.exclude(ident)
+            if str(detail["hash_id"]) != ident:
+                raise ValueError("Sreality detail ID does not match the requested listing")
+            # Persist raw data independently, even when adaptation/filtering fails.
+            store.save_source(detail)
+            source = source_listing(detail)
+            if source_rejection(source, settings.district_id, settings.max_rent_kc) is not None:
+                counts["excluded"] += 1
                 continue
-            category = detail.get("category_sub_cb") or {}
-            if str(category.get("name", "")).strip().casefold() in {"pokoj", "pokoje"}:
-                store.exclude(ident)
-                continue
-
-            fingerprint = extraction_fingerprint(detail)
             cached = store.get_extraction(ident)
-            previous = store.get_ad(ident)
-            if cached is not None and cached.fingerprint == fingerprint:
-                result = cached.result
-                cache_hits += 1
-            elif cached is None and previous is not None:
-                # Upgrade legacy records without paying for the same parsing again.
-                # Their original source hash is unknown: today's content becomes
-                # the baseline; subsequent changes will trigger re-extraction.
-                result = RentalDetails.model_validate(
-                    previous.listing.model_dump(include=set(RentalDetails.model_fields)))
-                store.cache_extraction(ident, fingerprint, result)
-                cache_hits += 1
+            if cached is not None and not reextract:
+                rental = cached.details
+                counts["cache_hits"] += 1
             else:
-                llm_calls += 1
-                result = extract(ai, settings.openai_model, detail)
-                # Persist EVERY successful result before filtering or enrichment.
-                # A later failure won't cause another paid call for the same input.
-                store.cache_extraction(ident, fingerprint, result)
-
-            if result.is_room_rent or result.rent_kc is None or not 0 < result.rent_kc < settings.max_rent_kc:
-                store.exclude(ident)
+                counts["llm_calls"] += 1
+                rental = extract(ai, settings.openai_model, detail)
+                store.save_extraction(ident, rental)
+            if rental_rejection(rental, settings.max_rent_kc) is not None:
+                counts["excluded"] += 1
                 continue
-
-            listing = Listing(**result.model_dump(), **listing_dates(detail),
-                              link=listing_link(detail), photos=listing_photos(detail),
-                              distance_to_center_km=distance_to_center_km(detail.get("locality")))
-            # Refresh metadata silently; don't resend already delivered listings.
-            notified = previous.notified if previous is not None else initial and not settings.notify_existing
-            store.save_ad(ident, StoredAd(title=detail["advert_name"], listing=listing, notified=notified))
+            listings.append(Listing(source=source, rental=rental))
+            if initial and not settings.notify_existing:
+                store.suppress(ident)
         except StorageError:
             raise
         except Exception as exc:
-            failed = True
+            # Keep previous facts, but don't export/deliver a failed check.
+            counts["errors"] += 1
             LOG.warning("Listing %s failed (%s); will retry", ident, type(exc).__name__)
         finally:
             time.sleep(0.5)
-    if not failed:
+    listings.sort(key=lambda listing: listing.source.id)
+    stats = ScanStats(search_results=len(ads), listings=tuple(listings), **counts)
+    store.export_listings(settings.data_dir / "listings.json", listings)
+    if stats.succeeded:
         store.mark_initialized()
-    store.export_listings(settings.data_dir / "listings.json")
-    LOG.info("Scan complete: %d search results, %d LLM calls, %d cache hits",
-             len(ads), llm_calls, cache_hits)
-    return not failed
+    LOG.info("Scan complete: %d results, %d LLM calls, %d cache hits, %d excluded, %d errors",
+             stats.search_results, stats.llm_calls, stats.cache_hits, stats.excluded, stats.errors)
+    return stats

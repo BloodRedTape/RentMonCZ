@@ -1,29 +1,30 @@
-"""Validated payment, listing and persisted state contracts."""
-from datetime import date
+"""Domain contracts: source metadata, rental facts and monitoring state."""
+from datetime import date, datetime
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 
 class Model(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
 
 
 class Payments(Model):
     rent_kc: float | None = Field(..., ge=0)
     utilities_kc: float | None = Field(..., ge=0)
-    # Spelling preserved from the requested JSON contract.
-    comission_kc: float | None = Field(..., ge=0)
+    commission_kc: float | None = Field(..., ge=0)
     deposit_kc: float | None = Field(..., ge=0)
 
-    @field_validator("rent_kc", "utilities_kc", "comission_kc", "deposit_kc")
+    @field_validator("rent_kc", "utilities_kc", "commission_kc", "deposit_kc")
     @classmethod
     def normalize_amount(cls, value: float | None) -> float | None:
-        # Contract: zero amounts are represented as null in every payment field.
         return None if value == 0 else value
 
 
-class RentalDetails(Payments):
+class RentalDetails(Model):
+    """Only facts extracted by the LLM; no API metadata or delivery flags."""
+    payments: Payments
     is_room_rent: bool = Field(..., strict=True)
     area_m2: float | None = Field(..., gt=0)
     available_from: date | Literal["asap"] | None = Field(...)
@@ -34,46 +35,88 @@ class RentalDetails(Payments):
         if value is None or value == "asap" or type(value) is date:
             return value
         if isinstance(value, str):
-            # Require an actual ISO calendar date, not a timestamp or partial date.
             parsed = date.fromisoformat(value)
             if parsed.isoformat() == value:
                 return parsed
-        raise ValueError("Expected null, 'asap' or a date in YYYY-MM-DD format")
+        raise ValueError("Expected null, 'asap' or YYYY-MM-DD")
 
 
-class Listing(RentalDetails):
-    # Defaults keep older db.json records readable without another LLM call.
-    is_room_rent: bool = Field(default=False, strict=True)
-    area_m2: float | None = Field(default=None, gt=0)
-    available_from: date | Literal["asap"] | None = None
-    distance_to_center_km: float | None = Field(default=None, ge=0)
-    published_at: date | None = None
-    updated_at: date | None = None
-    photos: list[HttpUrl] = Field(default_factory=list)
-    link: HttpUrl
-
-    @model_validator(mode="before")
-    @classmethod
-    def infer_legacy_room_category(cls, value):
-        if isinstance(value, dict) and "is_room_rent" not in value:
-            value = value | {"is_room_rent": "/byt/pokoj/" in str(value.get("link", ""))}
-        return value
-
-
-class StoredAd(Model):
+class SourceListing(Model):
+    """Metadata read from Sreality, refreshed independently of LLM parsing."""
+    id: str = Field(min_length=1)
     title: str
-    listing: Listing
-    notified: bool = Field(strict=True)
+    link: HttpUrl
+    category_main: int | None
+    category_type: int | None
+    district_id: int | None
+    api_price_kc: float | None
+    is_room_category: bool
+    distance_to_center_km: float | None = Field(..., ge=0)
+    published_at: date | None
+    updated_at: date | None
+    photos: tuple[HttpUrl, ...] = Field(max_length=3)
 
 
-class CachedExtraction(Model):
-    fingerprint: str = Field(min_length=64, max_length=64)
-    result: RentalDetails
+class ExclusionReason(str, Enum):
+    SOURCE_FILTER = "source_filter"
+    ROOM = "room"
+    UNKNOWN_RENT = "unknown_rent"
+    RENT_LIMIT = "rent_limit"
 
 
-class Database(Model):
-    schema_version: Literal[1] = 1
-    initialized: bool = Field(strict=True)
-    ads: dict[str, StoredAd]
-    excluded_ids: list[str] = Field(default_factory=list)
-    parsed_results: dict[str, CachedExtraction] = Field(default_factory=dict)
+class NotificationStatus(str, Enum):
+    SENT = "sent"
+    SUPPRESSED = "suppressed"
+
+
+class Listing(Model):
+    """Public projection for export and Telegram, without internal state."""
+    source: SourceListing
+    rental: RentalDetails
+
+
+class SourceRecord(Model):
+    raw: dict
+    first_seen_at: datetime
+    last_seen_at: datetime
+
+    @model_validator(mode="after")
+    def validate_id(self):
+        if not self.raw.get("hash_id"):
+            raise ValueError("Raw listing must have a hash_id")
+        return self
+
+
+class ExtractionRecord(Model):
+    details: RentalDetails
+    extracted_at: datetime
+
+
+class NotificationRecord(Model):
+    status: NotificationStatus
+    sent_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_sent_at(self):
+        if (self.status == NotificationStatus.SENT) != (self.sent_at is not None):
+            raise ValueError("Only sent notifications must have sent_at")
+        return self
+
+
+class MonitorState(Model):
+    schema_version: Literal[4] = 4
+    initialized: bool = Field(default=False, strict=True)
+    current_search_ids: frozenset[str] = frozenset()
+
+
+class ScanStats(Model):
+    search_results: int
+    llm_calls: int = 0
+    cache_hits: int = 0
+    excluded: int = 0
+    errors: int = 0
+    listings: tuple[Listing, ...] = ()
+
+    @property
+    def succeeded(self) -> bool:
+        return self.errors == 0

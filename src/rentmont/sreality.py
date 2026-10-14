@@ -5,6 +5,9 @@ import unicodedata
 import httpx
 from pydantic import HttpUrl, ValidationError
 
+from .location import distance_to_center_km
+from .models import SourceListing
+
 API = "https://www.sreality.cz/api/v1"
 
 
@@ -72,6 +75,25 @@ def listing_dates(detail: dict) -> dict[str, date | None]:
                 pass
         dates[target] = parsed
     return dates
+
+
+def is_room_category(detail: dict) -> bool:
+    category = detail.get("category_sub_cb") or {}
+    return str(category.get("name", "")).strip().casefold() in {"pokoj", "pokoje"}
+
+
+def source_listing(detail: dict) -> SourceListing:
+    """Boundary adapter: external dictionaries become validated domain data."""
+    locality = detail.get("locality") or {}
+    return SourceListing(
+        id=str(detail["hash_id"]), title=detail["advert_name"], link=listing_link(detail),
+        category_main=(detail.get("category_main_cb") or {}).get("value"),
+        category_type=(detail.get("category_type_cb") or {}).get("value"),
+        district_id=locality.get("district_id"), api_price_kc=detail.get("price_czk"),
+        is_room_category=is_room_category(detail),
+        distance_to_center_km=distance_to_center_km(locality),
+        photos=listing_photos(detail), **listing_dates(detail),
+    )
 
 
 def matches(ad: dict, district: int, ceiling: int) -> bool:

@@ -1,23 +1,22 @@
-"""Telegram delivery with a persistent retry queue."""
+"""Telegram formatting and delivery; persistence belongs to the caller."""
 from html import escape
 import json
 import logging
 import re
-import time
 
 import httpx
 
-from .models import StoredAd
+from .models import Listing
 from .sreality import photo_download_url
-from .storage import JsonStore
 
 LOG = logging.getLogger(__name__)
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
 
 
-def format_message(ad: StoredAd) -> str:
-    """Telegram HTML; only the escaped listing title is a clickable link."""
-    listing = ad.listing
+def format_message(listing: Listing) -> str:
+    """Render a domain projection; no cache or notification state is needed."""
+    source, rental = listing.source, listing.rental
+    payments = rental.payments
 
     def money(value: float | None) -> str:
         return "не указано" if value is None else f"{value:,.0f} Kč"
@@ -31,20 +30,20 @@ def format_message(ad: StoredAd) -> str:
     def calendar(value) -> str:
         return "не указано" if value is None else value.strftime("%d.%m.%Y")
 
-    area = "не указано" if listing.area_m2 is None else f"{listing.area_m2:g} м²"
-    title = escape(" ".join(ad.title.split())[:180])
-    link = escape(str(listing.link), quote=True)
-    availability = listing.available_from
+    area = "не указано" if rental.area_m2 is None else f"{rental.area_m2:g} м²"
+    title = escape(" ".join(source.title.split())[:180])
+    link = escape(str(source.link), quote=True)
+    availability = rental.available_from
     move_in = "как можно скорее" if availability == "asap" else calendar(availability)
-    distance = ("не указано" if listing.distance_to_center_km is None
-                else f"≈{listing.distance_to_center_km:.1f} км по прямой")
+    distance = ("не указано" if source.distance_to_center_km is None
+                else f"≈{source.distance_to_center_km:.1f} км по прямой")
     return "\n".join([
         f'🏠 <a href="{link}">{title}</a> — {area}',
-        f"💰 Price: {money_pair(listing.rent_kc, listing.utilities_kc)}",
-        f"🔐 Comission/Deposit: {money(listing.comission_kc)} + {money(listing.deposit_kc)}",
+        f"💰 Price: {money_pair(payments.rent_kc, payments.utilities_kc)}",
+        f"🔐 Commission/Deposit: {money(payments.commission_kc)} + {money(payments.deposit_kc)}",
         f"🔑 Move In: {move_in}",
         f"📍 Km to Center: {distance}",
-        f"🕒 Uploaded {calendar(listing.published_at)} Updated {calendar(listing.updated_at)}",
+        f"🕒 Uploaded {calendar(source.published_at)} Updated {calendar(source.updated_at)}",
     ])
 
 
@@ -65,7 +64,6 @@ def safe_description(description: str, token: str) -> str:
 
 def download_photo(client: httpx.Client, url: str) -> tuple[str, bytes, str]:
     """Download bounded JPEG/PNG bytes; Telegram must not fetch the CDN URL."""
-    # Also normalize older db.json photo URLs saved without the CDN rendition.
     url = photo_download_url(url)
     with client.stream("GET", url, follow_redirects=True, timeout=30) as response:
         response.raise_for_status()
@@ -105,10 +103,10 @@ def post_message(client: httpx.Client, token: str, method: str, payload: dict,
                                str(result.get("description", "No description returned")))
 
 
-def send_ad(client: httpx.Client, token: str, chat: str, ad: StoredAd) -> None:
-    text = format_message(ad)
+def send_ad(client: httpx.Client, token: str, chat: str, listing: Listing) -> None:
+    text = format_message(listing)
     photos = []
-    for index, url in enumerate(ad.listing.photos[:3], start=1):
+    for index, url in enumerate(listing.source.photos, start=1):
         try:
             photos.append(download_photo(client, str(url)))
         except httpx.HTTPStatusError as exc:
@@ -146,19 +144,3 @@ def send_ad(client: httpx.Client, token: str, chat: str, ad: StoredAd) -> None:
                   "link_preview_options": {"is_disabled": True}})
 
 
-def send_pending(client: httpx.Client, store: JsonStore, token: str, chat: str) -> bool:
-    for ident, ad in store.pending():
-        try:
-            send_ad(client, token, chat, ad)
-        except Exception as exc:
-            # HTTP exception strings include the secret bot token in the URL.
-            if isinstance(exc, TelegramRejected):
-                LOG.warning("Telegram rejected listing %s (code %s): %s; queue retained",
-                            ident, exc.code, safe_description(exc.description, token))
-            else:
-                LOG.warning("Telegram delivery failed for listing %s (%s); queue retained",
-                            ident, type(exc).__name__)
-            return False
-        store.mark_notified(ident)
-        time.sleep(1.1)
-    return True
