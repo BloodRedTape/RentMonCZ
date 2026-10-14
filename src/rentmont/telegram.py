@@ -13,10 +13,21 @@ LABELS = {"rent_kc": "Аренда / мес.", "utilities_kc": "Коммунал
 
 
 def format_message(ad: StoredAd) -> str:
-    lines = [ad.title[:250]]
+    area = ad.listing.area_m2
+    lines = [ad.title[:250],
+             "Тип: " + ("комната" if ad.listing.is_room_rent else "квартира целиком"),
+             "Площадь: " + ("не указано" if area is None else f"{area:g} м²")]
     for key, label in LABELS.items():
         value = getattr(ad.listing, key)
         lines.append(f"{label}: " + ("не указано" if value is None else f"{value:,.0f} Kč"))
+    availability = ad.listing.available_from
+    if availability is None:
+        move_in = "не указано"
+    elif availability == "asap":
+        move_in = "как можно скорее"
+    else:
+        move_in = availability.strftime("%d.%m.%Y")
+    lines.append(f"Заселение: {move_in}")
     lines.append(str(ad.listing.link))
     return "\n".join(lines)
 

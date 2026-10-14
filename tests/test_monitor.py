@@ -1,19 +1,22 @@
+from datetime import date
 import json
 import math
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import httpx
 from pydantic import ValidationError
 
 from rentmont.config import Settings
-from rentmont.models import Listing, Payments, StoredAd
+from rentmont.extraction import extract
+from rentmont.models import Listing, Payments, RentalDetails, StoredAd
 from rentmont.service import scan
 from rentmont.sreality import matches, search
 from rentmont.storage import JsonStore, StorageError
-from rentmont.telegram import send_pending
+from rentmont.telegram import format_message, send_pending
 
 
 def ad(ident=123, price=12000, district=72):
@@ -49,6 +52,102 @@ class MonitorTests(unittest.TestCase):
         for value in (-1, math.inf, math.nan):
             with self.assertRaises(ValidationError):
                 Payments(rent_kc=value, utilities_kc=None, comission_kc=None, deposit_kc=None)
+
+    def test_zero_payments_are_null(self):
+        for field in Payments.model_fields:
+            for value in (0, 0.0, "0.0", None, 15000):
+                with self.subTest(field=field, value=value):
+                    expected = 15000 if value == 15000 else None
+                    parsed = Payments(**(payments().model_dump() | {field: value}))
+                    self.assertEqual(getattr(parsed, field), expected)
+                    self.assertEqual(json.loads(parsed.model_dump_json())[field], expected)
+            with self.assertRaises(ValidationError):
+                Payments(**(payments().model_dump() | {field: -1}))
+
+    def test_existing_zero_payments_are_normalized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "db.json"
+            record = stored_ad().model_dump(mode="json")
+            for field in Payments.model_fields:
+                record["listing"][field] = 0.0
+            path.write_text(json.dumps({"initialized": True, "ads": {"1": record}}), encoding="utf-8")
+            store = JsonStore(path)
+            for field in Payments.model_fields:
+                self.assertIsNone(getattr(store.pending()[0][1].listing, field))
+            store.mark_initialized()
+            store.export_listings(path.parent / "listings.json")
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            exported = json.loads((path.parent / "listings.json").read_text(encoding="utf-8"))
+            for field in Payments.model_fields:
+                self.assertIsNone(saved["ads"]["1"]["listing"][field])
+                self.assertIsNone(exported[0][field])
+
+    def test_rental_details_and_telegram(self):
+        details = RentalDetails(**payments().model_dump(), is_room_rent=True, area_m2=23.5, available_from=None)
+        listing = Listing(**details.model_dump(), link="https://www.sreality.cz/")
+        message = format_message(StoredAd(title="Room", listing=listing, notified=False))
+        self.assertIn("Тип: комната", message)
+        self.assertIn("23.5 м²", message)
+        for area in (0, -1, math.inf):
+            with self.assertRaises(ValidationError):
+                RentalDetails(**payments().model_dump(), is_room_rent=False, area_m2=area, available_from=None)
+
+    def test_room_category_and_extraction_payload(self):
+        ai = MagicMock()
+        parsed = RentalDetails(**payments().model_dump(), is_room_rent=False, area_m2=80, available_from=None)
+        ai.chat.completions.parse.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))])
+        detail = ad() | {"category_sub_cb": {"name": "Pokoj"}, "usable_area": 80,
+                         "advert_description": "Pronajem pokoje", "user_email": "private",
+                         "ready_date": "2026-12-01"}
+        result = extract(ai, "model", detail)
+        self.assertTrue(result.is_room_rent)
+        self.assertEqual(result.area_m2, 80)
+        args = ai.chat.completions.parse.call_args.kwargs
+        self.assertIs(args["response_format"], RentalDetails)
+        payload = json.loads(args["messages"][1]["content"])
+        self.assertEqual(payload["usable_area"], 80)
+        self.assertEqual(payload["ready_date"], "2026-12-01")
+        self.assertNotIn("user_email", payload)
+
+    def test_legacy_listing_defaults(self):
+        listing = Listing.model_validate(payments().model_dump() | {"link": "https://www.sreality.cz/"})
+        self.assertFalse(listing.is_room_rent)
+        self.assertIsNone(listing.area_m2)
+        self.assertIsNone(listing.available_from)
+
+    def test_availability_variants_and_telegram(self):
+        for value, expected, text in (
+            (None, None, "не указано"),
+            ("asap", "asap", "как можно скорее"),
+            ("2026-12-01", "2026-12-01", "01.12.2026"),
+            (date(2026, 12, 1), "2026-12-01", "01.12.2026"),
+        ):
+            with self.subTest(value=value):
+                details = RentalDetails(**payments().model_dump(), is_room_rent=False,
+                                        area_m2=None, available_from=value)
+                self.assertEqual(json.loads(details.model_dump_json())["available_from"], expected)
+                listing = Listing(**details.model_dump(), link="https://www.sreality.cz/")
+                message = format_message(StoredAd(title="Flat", listing=listing, notified=False))
+                self.assertIn(f"Заселение: {text}", message)
+
+    def test_invalid_availability(self):
+        for value in ("soon", "2026-02-30", "01.12.2026", "2026-12", "20261201", 0, True):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                RentalDetails(**payments().model_dump(), is_room_rent=False,
+                              area_m2=None, available_from=value)
+
+    def test_availability_storage_roundtrip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JsonStore(Path(directory) / "db.json")
+            for ident, value in enumerate((None, "asap", "2026-12-01")):
+                listing = Listing(**payments().model_dump(), available_from=value,
+                                  link="https://www.sreality.cz/")
+                store.add(str(ident), StoredAd(title="Flat", listing=listing, notified=False))
+            reopened = JsonStore(store.path)
+            reopened.export_listings(Path(directory) / "listings.json")
+            data = json.loads((Path(directory) / "listings.json").read_text(encoding="utf-8"))
+            self.assertEqual([item["available_from"] for item in data], [None, "asap", "2026-12-01"])
 
     def test_config_validation(self):
         for overrides in ({"poll_seconds": 0}, {"notify_existing": "maybe"}, {"district_id": -1}):
@@ -90,7 +189,7 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual([ident for ident, _ in store.pending()], ["456"])
             data = json.loads((path / "listings.json").read_text(encoding="utf-8"))
             self.assertEqual(len(data), 2)
-            self.assertEqual(set(data[0]), {"rent_kc", "utilities_kc", "comission_kc", "deposit_kc", "link"})
+            self.assertEqual(set(data[0]), {"rent_kc", "utilities_kc", "comission_kc", "deposit_kc", "link", "is_room_rent", "area_m2", "available_from"})
 
     def test_notify_existing_and_extraction_retry(self):
         with tempfile.TemporaryDirectory() as directory:
