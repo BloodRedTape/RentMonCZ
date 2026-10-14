@@ -72,7 +72,8 @@ def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings,
                 counts["llm_calls"] += 1
                 rental = extract(ai, settings.openai_model, detail)
                 store.save_extraction(ident, rental)
-            if rental_rejection(rental, settings.max_rent_kc) is not None:
+            if rental_rejection(rental, settings.max_rent_kc,
+                                settings.max_rent_and_utilities_kc) is not None:
                 counts["excluded"] += 1
                 continue
             listings.append(Listing(source=source, rental=rental))

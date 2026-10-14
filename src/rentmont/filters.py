@@ -12,7 +12,8 @@ def source_rejection(source: SourceListing, district: int, ceiling: int) -> Excl
     return None
 
 
-def rental_rejection(rental: RentalDetails, ceiling: int) -> ExclusionReason | None:
+def rental_rejection(rental: RentalDetails, ceiling: int,
+                     total_ceiling: int | None = None) -> ExclusionReason | None:
     if rental.is_room_rent:
         return ExclusionReason.ROOM
     rent = rental.payments.rent_kc
@@ -20,4 +21,7 @@ def rental_rejection(rental: RentalDetails, ceiling: int) -> ExclusionReason | N
         return ExclusionReason.UNKNOWN_RENT
     if not 0 < rent < ceiling:
         return ExclusionReason.RENT_LIMIT
+    utilities = rental.payments.utilities_kc
+    if total_ceiling is not None and utilities is not None and rent + utilities >= total_ceiling:
+        return ExclusionReason.RENT_AND_UTILITIES_LIMIT
     return None

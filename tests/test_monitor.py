@@ -52,6 +52,26 @@ class DomainTests(unittest.TestCase):
         self.assertEqual(rental_rejection(rental(rent=13500), 13500), ExclusionReason.RENT_LIMIT)
 
 
+class TotalLimitTests(unittest.TestCase):
+    def test_total_limit_boundaries(self):
+        for utilities, expected in ((1999, None), (2000, ExclusionReason.RENT_AND_UTILITIES_LIMIT),
+                                    (2001, ExclusionReason.RENT_AND_UTILITIES_LIMIT), (None, None)):
+            with self.subTest(utilities=utilities):
+                self.assertEqual(rental_rejection(rental(utilities=utilities), 13500, 14000), expected)
+        self.assertIsNone(rental_rejection(rental(utilities=99999), 13500))
+        self.assertEqual(rental_rejection(rental(rent=None), 13500, 14000), ExclusionReason.UNKNOWN_RENT)
+
+    def test_setting_validation(self):
+        from tests.helpers import config
+        settings = config(Path("data"))
+        self.assertIsNone(settings.max_rent_and_utilities_kc)
+        for value in (0, -1):
+            with self.assertRaises(ValidationError):
+                type(settings).model_validate(settings.model_dump() | {"max_rent_and_utilities_kc": value})
+        parsed = type(settings).model_validate(settings.model_dump() | {"max_rent_and_utilities_kc": "17000"})
+        self.assertEqual(parsed.max_rent_and_utilities_kc, 17000)
+
+
 class StorageTests(unittest.TestCase):
     def test_independent_files_roundtrip(self):
         with tempfile.TemporaryDirectory() as directory:

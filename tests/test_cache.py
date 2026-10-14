@@ -132,6 +132,18 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(calls, 0)
         self.assertEqual(stats.excluded, 1)
 
+    def test_total_limit_recomputed_on_saved_facts(self):
+        self.run_scan(facts=rental(rent=12000, utilities=3000))
+        self.settings = self.settings.model_copy(update={"max_rent_and_utilities_kc": 15000})
+        stats, calls = self.run_scan()
+        self.assertEqual(calls, 0)
+        self.assertEqual(stats.excluded, 1)
+        self.assertEqual(stats.listings, ())
+        self.settings = self.settings.model_copy(update={"max_rent_and_utilities_kc": 15001})
+        stats, calls = self.run_scan()
+        self.assertEqual(calls, 0)
+        self.assertEqual(len(stats.listings), 1)
+
     def test_failed_search_preserves_membership(self):
         self.run_scan()
         with patch("rentmont.service.search", side_effect=RuntimeError("network")):

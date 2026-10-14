@@ -62,6 +62,7 @@ class ExclusionReason(str, Enum):
     ROOM = "room"
     UNKNOWN_RENT = "unknown_rent"
     RENT_LIMIT = "rent_limit"
+    RENT_AND_UTILITIES_LIMIT = "rent_and_utilities_limit"
 
 
 class NotificationStatus(str, Enum):
