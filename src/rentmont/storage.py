@@ -117,18 +117,22 @@ class JsonStore:
         except FileNotFoundError:
             return None
         except OSError as exc:
-            raise StorageError(f"Cannot read {path}") from exc
+            raise StorageError(f"Cannot read {path}: {exc}") from exc
         try:
             return model.model_validate_json(content)
         except ValidationError as exc:
-            raise StorageError(f"Invalid data in {path}; file was not reset") from exc
+            problems = "; ".join(
+                f"{'.'.join(map(str, error['loc'])) or '<root>'}: {error['type']}"
+                for error in exc.errors(include_input=False)
+            )
+            raise StorageError(f"Invalid data in {path}: {problems}; file was not reset") from exc
 
     def _write(self, path: Path, record: BaseModel) -> None:
         record = type(record).model_validate(record.model_dump())
         try:
             atomic_write(path, record.model_dump_json(indent=2).encode("utf-8"))
         except OSError as exc:
-            raise StorageError(f"Cannot save {path}") from exc
+            raise StorageError(f"Cannot save {path}: {exc}") from exc
 
     def _commit(self, state: MonitorState) -> None:
         self._write(self.path, state)

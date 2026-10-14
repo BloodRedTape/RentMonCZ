@@ -29,7 +29,9 @@ def main() -> None:
         parser.error(f"Check .env configuration: {fields}")
     try:
         store = JsonStore(settings.data_dir)
-    except (OSError, ValidationError, StorageError) as exc:
+    except StorageError as exc:
+        parser.error(str(exc))
+    except (OSError, ValidationError) as exc:
         parser.error(f"Cannot load/create {settings.data_dir / 'state.json'} ({type(exc).__name__}); file was not reset")
     try:
         with httpx.Client(timeout=30, follow_redirects=True,
