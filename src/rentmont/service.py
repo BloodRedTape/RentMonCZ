@@ -1,4 +1,4 @@
-"""Refresh source data, extract missing facts and evaluate current policy."""
+"""Discover listings, reuse local source data and evaluate current policy."""
 import logging
 import time
 
@@ -48,12 +48,18 @@ def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings,
     listings = []
     for ad in ads:
         ident = str(ad["hash_id"])
+        requested = False
         try:
-            detail = api_json(client, f"estates/{ident}")["result"]
-            if str(detail["hash_id"]) != ident:
-                raise ValueError("Sreality detail ID does not match the requested listing")
-            # Persist raw data independently, even when adaptation/filtering fails.
-            store.save_source(detail)
+            saved_source = store.get_source(ident)
+            if saved_source is None or reextract:
+                requested = True
+                detail = api_json(client, f"estates/{ident}")["result"]
+                if str(detail["hash_id"]) != ident:
+                    raise ValueError("Sreality detail ID does not match the requested listing")
+                # Keep raw data even when subsequent extraction/filtering fails.
+                store.save_source(detail)
+            else:
+                detail = saved_source.raw
             source = source_listing(detail)
             if source_rejection(source, settings.district_id, settings.max_rent_kc) is not None:
                 counts["excluded"] += 1
@@ -79,7 +85,8 @@ def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings,
             counts["errors"] += 1
             LOG.warning("Listing %s failed (%s); will retry", ident, type(exc).__name__)
         finally:
-            time.sleep(0.5)
+            if requested:
+                time.sleep(0.5)
     listings.sort(key=lambda listing: listing.source.id)
     stats = ScanStats(search_results=len(ads), listings=tuple(listings), **counts)
     store.export_listings(settings.data_dir / "listings.json", listings)

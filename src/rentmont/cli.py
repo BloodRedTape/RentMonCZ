@@ -53,8 +53,11 @@ def main() -> None:
                         raise SystemExit(1)
                     break
                 time.sleep(max(0, settings.poll_seconds - (time.monotonic() - start)))
-    except (StorageError, OSError) as exc:
-        LOG.error("Storage/IO failure (%s); stopping", type(exc).__name__)
+    except StorageError as exc:
+        LOG.error("Storage failure: %s; stopping", exc)
+        raise SystemExit(1) from None
+    except OSError as exc:
+        LOG.error("IO failure (%s); stopping", type(exc).__name__)
         raise SystemExit(1) from None
     except KeyboardInterrupt:
         LOG.info("Stopped")
