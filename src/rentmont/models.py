@@ -46,6 +46,7 @@ class Listing(RentalDetails):
     is_room_rent: bool = Field(default=False, strict=True)
     area_m2: float | None = Field(default=None, gt=0)
     available_from: date | Literal["asap"] | None = None
+    distance_to_center_km: float | None = Field(default=None, ge=0)
     link: HttpUrl
 
 

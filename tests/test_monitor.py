@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from rentmont.config import Settings
 from rentmont.extraction import extract
+from rentmont.location import BRNO_CENTER_LAT, BRNO_CENTER_LON, distance_to_center_km
 from rentmont.models import Listing, Payments, RentalDetails, StoredAd
 from rentmont.service import scan
 from rentmont.sreality import matches, search
@@ -23,7 +24,8 @@ def ad(ident=123, price=12000, district=72):
     return {"hash_id": ident, "price_czk": price,
             "category_main_cb": {"value": 1}, "category_type_cb": {"value": 2},
             "category_sub_cb": {"name": "1+kk"}, "advert_name": "Test apartment",
-            "locality": {"district_id": district, "city_seo_name": "brno"}}
+            "locality": {"district_id": district, "city_seo_name": "brno",
+                         "gps_lat": 49.166982790872, "gps_lon": 16.5559570672062}}
 
 
 def payments():
@@ -115,6 +117,7 @@ class MonitorTests(unittest.TestCase):
         self.assertFalse(listing.is_room_rent)
         self.assertIsNone(listing.area_m2)
         self.assertIsNone(listing.available_from)
+        self.assertIsNone(listing.distance_to_center_km)
 
     def test_availability_variants_and_telegram(self):
         for value, expected, text in (
@@ -149,7 +152,37 @@ class MonitorTests(unittest.TestCase):
             data = json.loads((Path(directory) / "listings.json").read_text(encoding="utf-8"))
             self.assertEqual([item["available_from"] for item in data], [None, "asap", "2026-12-01"])
 
+    def test_distance_calculation(self):
+        self.assertEqual(distance_to_center_km({"gps_lat": BRNO_CENTER_LAT,
+                                               "gps_lon": BRNO_CENTER_LON}), 0.0)
+        self.assertEqual(distance_to_center_km(ad()["locality"]), 4.9)
+        # One latitude degree is approximately 111 km.
+        self.assertEqual(distance_to_center_km({"gps_lat": BRNO_CENTER_LAT + 1,
+                                               "gps_lon": BRNO_CENTER_LON}), 111.2)
+
+    def test_invalid_coordinates(self):
+        for locality in (None, {}, {"gps_lat": 49}, {"gps_lat": 0, "gps_lon": 0},
+                         {"gps_lat": "49", "gps_lon": 16}, {"gps_lat": True, "gps_lon": 16},
+                         {"gps_lat": math.nan, "gps_lon": 16},
+                         {"gps_lat": 49, "gps_lon": math.inf},
+                         {"gps_lat": 91, "gps_lon": 16}, {"gps_lat": 49, "gps_lon": 181}):
+            with self.subTest(locality=locality):
+                self.assertIsNone(distance_to_center_km(locality))
+
+    def test_distance_telegram_and_roundtrip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JsonStore(Path(directory) / "db.json")
+            listing = Listing(**payments().model_dump(), distance_to_center_km=4.9,
+                              link="https://www.sreality.cz/")
+            store.add("1", StoredAd(title="Flat", listing=listing, notified=False))
+            loaded = JsonStore(store.path).pending()[0][1]
+            self.assertEqual(loaded.listing.distance_to_center_km, 4.9)
+            self.assertIn("До центра: ≈4.9 км по прямой", format_message(loaded))
+            self.assertIn("До центра: не указано", format_message(stored_ad()))
+
     def test_config_validation(self):
+        self.assertEqual(settings(Path("data")).openai_model, "gpt-5.4-mini")
+        self.assertEqual(settings(Path("data"), openai_model="custom-model").openai_model, "custom-model")
         for overrides in ({"poll_seconds": 0}, {"notify_existing": "maybe"}, {"district_id": -1}):
             with self.assertRaises(ValidationError):
                 settings(Path("data"), **overrides)
@@ -189,7 +222,8 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual([ident for ident, _ in store.pending()], ["456"])
             data = json.loads((path / "listings.json").read_text(encoding="utf-8"))
             self.assertEqual(len(data), 2)
-            self.assertEqual(set(data[0]), {"rent_kc", "utilities_kc", "comission_kc", "deposit_kc", "link", "is_room_rent", "area_m2", "available_from"})
+            self.assertEqual(set(data[0]), {"rent_kc", "utilities_kc", "comission_kc", "deposit_kc", "link", "is_room_rent", "area_m2", "available_from", "distance_to_center_km"})
+            self.assertEqual(data[0]["distance_to_center_km"], 4.9)
 
     def test_notify_existing_and_extraction_retry(self):
         with tempfile.TemporaryDirectory() as directory:

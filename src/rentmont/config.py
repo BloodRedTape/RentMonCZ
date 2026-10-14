@@ -10,7 +10,7 @@ class Settings(BaseModel):
     openai_api_key: SecretStr
     telegram_bot_token: SecretStr
     telegram_chat_id: str = Field(min_length=1)
-    openai_model: str = Field(default="gpt-4o-mini", min_length=1)
+    openai_model: str = Field(default="gpt-5.4-mini", min_length=1)
     poll_seconds: int = Field(default=600, gt=0)
     max_rent_kc: int = Field(default=13500, gt=0)
     district_id: int = Field(default=72, gt=0)

@@ -28,6 +28,9 @@ def format_message(ad: StoredAd) -> str:
     else:
         move_in = availability.strftime("%d.%m.%Y")
     lines.append(f"Заселение: {move_in}")
+    distance = ad.listing.distance_to_center_km
+    lines.append("До центра: " + ("не указано" if distance is None
+                                    else f"≈{distance:.1f} км по прямой"))
     lines.append(str(ad.listing.link))
     return "\n".join(lines)
 

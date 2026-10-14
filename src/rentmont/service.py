@@ -7,6 +7,7 @@ from openai import OpenAI
 
 from .config import Settings
 from .extraction import extract
+from .location import distance_to_center_km
 from .models import Listing, StoredAd
 from .sreality import api_json, listing_link, matches, search
 from .storage import JsonStore, StorageError
@@ -29,7 +30,8 @@ def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings)
             payments = extract(ai, settings.openai_model, detail)
             if payments.rent_kc is None or not 0 < payments.rent_kc < settings.max_rent_kc:
                 continue
-            listing = Listing(**payments.model_dump(), link=listing_link(detail))
+            listing = Listing(**payments.model_dump(), link=listing_link(detail),
+                              distance_to_center_km=distance_to_center_km(detail.get("locality")))
             store.add(ident, StoredAd(title=detail["advert_name"], listing=listing,
                                      notified=initial and not settings.notify_existing))
             LOG.info("Saved listing %s", ident)
