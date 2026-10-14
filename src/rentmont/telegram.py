@@ -6,7 +6,7 @@ import re
 
 import httpx
 
-from .models import Listing
+from .models import Listing, TelegramDelivery
 from .sreality import photo_download_url
 
 LOG = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ def download_photo(client: httpx.Client, url: str) -> tuple[str, bytes, str]:
 
 
 def post_message(client: httpx.Client, token: str, method: str, payload: dict,
-                 files: dict[str, tuple[str, bytes, str]] | None = None) -> None:
+                 files: dict[str, tuple[str, bytes, str]] | None = None) -> TelegramDelivery:
     url = f"https://api.telegram.org/bot{token}/{method}"
     if files:
         response = client.post(url, data=payload, files=files, timeout=90)
@@ -101,9 +101,18 @@ def post_message(client: httpx.Client, token: str, method: str, payload: dict,
     if not result.get("ok"):
         raise TelegramRejected(result.get("error_code", 0),
                                str(result.get("description", "No description returned")))
+    messages = result["result"] if method == "sendMediaGroup" else [result["result"]]
+    if not messages:
+        raise ValueError("Telegram returned no messages")
+    chat_id = messages[0]["chat"]["id"]
+    if any(message["chat"]["id"] != chat_id for message in messages):
+        raise ValueError("Telegram returned messages from different chats")
+    return TelegramDelivery(method=method, chat_id=chat_id,
+                            message_ids=tuple(message["message_id"] for message in messages),
+                            response=result)
 
 
-def send_ad(client: httpx.Client, token: str, chat: str, listing: Listing) -> None:
+def send_ad(client: httpx.Client, token: str, chat: str, listing: Listing) -> TelegramDelivery:
     text = format_message(listing)
     photos = []
     for index, url in enumerate(listing.source.photos, start=1):
@@ -130,8 +139,7 @@ def send_ad(client: httpx.Client, token: str, chat: str, listing: Listing) -> No
             media[0]["parse_mode"] = "HTML"
             payload = {"chat_id": chat, "media": json.dumps(media, ensure_ascii=False)}
         try:
-            post_message(client, token, method, payload, files=files)
-            return
+            return post_message(client, token, method, payload, files=files)
         except TelegramRejected as exc:
             # Only explicit rejection is safe to fall back from. A timeout may
             # mean Telegram accepted the album: retain the queue in that case.
@@ -139,8 +147,8 @@ def send_ad(client: httpx.Client, token: str, chat: str, listing: Listing) -> No
                 raise
             LOG.warning("Telegram %s rejected %d photo(s): %s; sending text instead",
                         method, len(photos), safe_description(exc.description, token))
-    post_message(client, token, "sendMessage",
-                 {"chat_id": chat, "text": text, "parse_mode": "HTML",
-                  "link_preview_options": {"is_disabled": True}})
+    return post_message(client, token, "sendMessage",
+                        {"chat_id": chat, "text": text, "parse_mode": "HTML",
+                         "link_preview_options": {"is_disabled": True}})
 
 

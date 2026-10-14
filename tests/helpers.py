@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from rentmont.config import Settings
-from rentmont.models import Listing, Payments, RentalDetails
+from rentmont.models import Listing, Payments, RentalDetails, TelegramDelivery
 from rentmont.sreality import source_listing
 
 PHOTO_BYTES = b"\xff\xd8\xfftest-jpeg-bytes"
@@ -29,6 +29,13 @@ def rental(rent=12000, room=False, utilities=2000, commission=None, deposit=2400
 def record(ident=123, photos=()):
     source = source_listing(api_ad(ident) | {"advert_images": list(photos)})
     return Listing(source=source, rental=rental())
+
+
+def delivery():
+    return TelegramDelivery(method="sendMessage", chat_id=-100123, message_ids=(42,),
+                            response={"ok": True, "result": {
+                                "message_id": 42, "chat": {"id": -100123},
+                                "date": 1791970000, "text": "notification"}})
 
 
 def config(path: Path, notify_existing=True):

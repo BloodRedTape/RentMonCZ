@@ -18,7 +18,7 @@ from rentmont.sreality import listing_dates, listing_photos, photo_download_url,
 from rentmont.storage import JsonStore, StorageError
 from rentmont.telegram import (TelegramRejected, download_photo, format_message,
                               post_message, safe_description, send_ad)
-from tests.helpers import PHOTO_BYTES, api_ad, rental, record
+from tests.helpers import PHOTO_BYTES, api_ad, rental, record, delivery
 
 
 class DomainTests(unittest.TestCase):
@@ -81,7 +81,7 @@ class StorageTests(unittest.TestCase):
             first_seen = store.get_source("123").first_seen_at
             source_bytes = (root / "123/source.json").read_bytes()
             store.save_extraction("123", rental())
-            store.mark_sent("123")
+            store.mark_sent("123", delivery())
             self.assertEqual((root / "123/source.json").read_bytes(), source_bytes)
             store.save_source(api_ad() | {"advert_description": "Changed"})
             store.set_current_search({"123"})
@@ -91,6 +91,8 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(store.get_source("123").first_seen_at, first_seen)
             self.assertEqual(store.get_extraction("123").details, rental())
             self.assertIsNotNone(store.get_notification("123").sent_at)
+            self.assertEqual(store.get_notification("123").telegram_response, delivery().response)
+            self.assertEqual(store.get_notification("123").message_ids, (42,))
             store.get_source("123").raw["hash_id"] = 999
             self.assertEqual(store.get_source("123").raw["hash_id"], 123)
             self.assertEqual(set(json.loads(store.path.read_text())),
@@ -196,17 +198,34 @@ class TelegramTests(unittest.TestCase):
                         return httpx.Response(200, content=PHOTO_BYTES)
                     requests.append(request)
                     code = status if not request.url.path.endswith("sendMessage") else 200
-                    return httpx.Response(code, json={"ok": code == 200, "description": "Rejected"})
+                    messages = [{"message_id": 42 + i, "chat": {"id": -100123},
+                                 "date": 1791970000, "caption": "notification"}
+                                for i in range(count if request.url.path.endswith("sendMediaGroup") else 1)]
+                    result = messages if request.url.path.endswith("sendMediaGroup") else messages[0]
+                    return httpx.Response(code, json={"ok": code == 200, "description": "Rejected", "result": result})
                 with httpx.Client(transport=httpx.MockTransport(handler)) as client:
                     if count and status == 429:
                         with self.assertRaises(httpx.HTTPStatusError):
                             send_ad(client, "secret", "1", record(photos=[f"https://example.com/{i}.jpg" for i in range(count)]))
                     else:
-                        send_ad(client, "secret", "1", record(photos=[f"https://example.com/{i}.jpg" for i in range(count)]))
+                        receipt = send_ad(client, "secret", "1", record(photos=[f"https://example.com/{i}.jpg" for i in range(count)]))
+                        expected_count = count if count > 1 and status == 200 else 1
+                        self.assertEqual(receipt.chat_id, -100123)
+                        self.assertEqual(receipt.message_ids, tuple(range(42, 42 + expected_count)))
+                        returned = receipt.response["result"]
+                        first_message = returned[0] if isinstance(returned, list) else returned
+                        self.assertEqual(first_message["date"], 1791970000)
+                        self.assertEqual(first_message["caption"], "notification")
+                        self.assertEqual(receipt.method, "sendMessage" if not count or status == 400 else "sendPhoto" if count == 1 else "sendMediaGroup")
                 if count:
                     self.assertIn("multipart/form-data", requests[0].headers["content-type"])
                     self.assertIn(PHOTO_BYTES, requests[0].content)
                 self.assertEqual(len(requests), 2 if count and status == 400 else 1)
+
+    def test_missing_message_metadata_is_not_accepted(self):
+        with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"ok": True}))) as client:
+            with self.assertRaises(KeyError):
+                post_message(client, "secret", "sendMessage", {"chat_id": "1", "text": "test"})
 
     def test_photo_validation_and_secret_redaction(self):
         with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"<html>"))) as client:

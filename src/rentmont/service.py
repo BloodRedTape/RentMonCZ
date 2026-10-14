@@ -25,7 +25,7 @@ def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
         if store.get_notification(ident) is not None:
             continue
         try:
-            send_ad(client, token, settings.telegram_chat_id, listing)
+            delivery = send_ad(client, token, settings.telegram_chat_id, listing)
         except Exception as exc:
             if isinstance(exc, TelegramRejected):
                 LOG.warning("Telegram rejected listing %s (code %s): %s; will retry",
@@ -34,7 +34,7 @@ def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
                 LOG.warning("Telegram delivery failed for listing %s (%s); will retry",
                             ident, type(exc).__name__)
             return False
-        store.mark_sent(ident)
+        store.mark_sent(ident, delivery)
         time.sleep(1.1)
     return True
 

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from rentmont.models import NotificationStatus
 from rentmont.service import scan, deliver
 from rentmont.storage import JsonStore
-from tests.helpers import api_ad, config, rental
+from tests.helpers import api_ad, config, rental, delivery
 
 
 class ScanTests(unittest.TestCase):
@@ -66,7 +66,7 @@ class ScanTests(unittest.TestCase):
 
     def test_known_source_is_not_refetched_or_resent(self):
         stats, _ = self.run_scan()
-        with patch("rentmont.service.send_ad") as send:
+        with patch("rentmont.service.send_ad", return_value=delivery()) as send:
             self.assertTrue(deliver(None, self.store, self.settings, stats.listings))
             changed = api_ad() | {"edited": "2026-10-15"}
             stats, calls = self.run_scan(detail=changed)
@@ -104,9 +104,13 @@ class ScanTests(unittest.TestCase):
         with patch("rentmont.service.send_ad", side_effect=RuntimeError("timeout")):
             self.assertFalse(deliver(None, self.store, self.settings, stats.listings))
         self.assertIsNone(self.store.get_notification("123"))
-        with patch("rentmont.service.send_ad"):
+        with patch("rentmont.service.send_ad", return_value=delivery()):
             self.assertTrue(deliver(None, self.store, self.settings, stats.listings))
-        self.assertIsNotNone(self.store.get_notification("123").sent_at)
+        notification = self.store.get_notification("123")
+        self.assertIsNotNone(notification.sent_at)
+        self.assertEqual(notification.chat_id, delivery().chat_id)
+        self.assertEqual(notification.message_ids, delivery().message_ids)
+        self.assertEqual(notification.telegram_response, delivery().response)
 
     def test_baseline_and_missing(self):
         self.settings = config(self.path, notify_existing=False)

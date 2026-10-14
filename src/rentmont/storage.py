@@ -9,7 +9,7 @@ from typing import TypeVar
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from .models import (MonitorState, ExtractionRecord, Listing, NotificationRecord,
-                     NotificationStatus, RentalDetails, SourceRecord)
+                     NotificationStatus, RentalDetails, SourceRecord, TelegramDelivery)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -83,9 +83,12 @@ class JsonStore:
     def get_notification(self, ident: str) -> NotificationRecord | None:
         return self._read(self._listing_path(ident, "notification.json"), NotificationRecord)
 
-    def mark_sent(self, ident: str) -> None:
+    def mark_sent(self, ident: str, delivery: TelegramDelivery) -> None:
         self._write(self._listing_path(ident, "notification.json"),
-                    NotificationRecord(status=NotificationStatus.SENT, sent_at=now()))
+                    NotificationRecord(status=NotificationStatus.SENT, sent_at=now(),
+                                       chat_id=delivery.chat_id, message_ids=delivery.message_ids,
+                                       telegram_method=delivery.method,
+                                       telegram_response=delivery.response))
 
     def suppress(self, ident: str) -> None:
         if self.get_notification(ident) is None:

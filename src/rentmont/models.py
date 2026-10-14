@@ -1,7 +1,7 @@
 """Domain contracts: source metadata, rental facts and monitoring state."""
 from datetime import date, datetime
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
@@ -93,14 +93,29 @@ class ExtractionRecord(Model):
     extracted_at: datetime
 
 
+class TelegramDelivery(Model):
+    method: Literal["sendMessage", "sendPhoto", "sendMediaGroup"]
+    chat_id: int = Field(strict=True)
+    message_ids: tuple[Annotated[int, Field(strict=True, gt=0)], ...] = Field(min_length=1)
+    response: dict
+
+
 class NotificationRecord(Model):
     status: NotificationStatus
     sent_at: datetime | None = None
+    chat_id: int | None = Field(default=None, strict=True)
+    message_ids: tuple[Annotated[int, Field(strict=True, gt=0)], ...] = ()
+    telegram_method: Literal["sendMessage", "sendPhoto", "sendMediaGroup"] | None = None
+    telegram_response: dict | None = None
 
     @model_validator(mode="after")
     def validate_sent_at(self):
         if (self.status == NotificationStatus.SENT) != (self.sent_at is not None):
             raise ValueError("Only sent notifications must have sent_at")
+        metadata = (self.chat_id is not None, bool(self.message_ids),
+                    self.telegram_method is not None, self.telegram_response is not None)
+        if any(metadata) and (not all(metadata) or self.status != NotificationStatus.SENT):
+            raise ValueError("Delivery metadata must be complete and only belongs to sent notifications")
         return self
 
 
