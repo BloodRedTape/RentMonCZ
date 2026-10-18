@@ -1,5 +1,6 @@
 """Single-process repository: independent atomic files per listing."""
 from datetime import datetime, timezone
+import logging
 import os
 from pathlib import Path
 import re
@@ -11,6 +12,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from .models import (MonitorState, ExtractionRecord, Listing, NotificationRecord,
                      NotificationStatus, RentalDetails, SourceRecord, TelegramDelivery)
 
+LOG = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -44,6 +46,10 @@ class JsonStore:
         if self._state is None:
             self._state = MonitorState()
             self._write(self.path, self._state)
+            LOG.info("Created monitor state in %s", directory)
+        else:
+            LOG.debug("Loaded monitor state from %s (initialized=%s)",
+                      self.path, self.initialized)
 
     @property
     def initialized(self) -> bool:
@@ -132,6 +138,7 @@ class JsonStore:
     def export_listings(self, path: Path, listings: list[Listing]) -> None:
         try:
             atomic_write(path, TypeAdapter(list[Listing]).dump_json(listings, indent=2))
+            LOG.debug("Exported %d listings to %s", len(listings), path)
         except OSError as exc:
             raise StorageError(f"Cannot export listings to {path}") from exc
 
@@ -164,6 +171,7 @@ class JsonStore:
         record = type(record).model_validate(record.model_dump())
         try:
             atomic_write(path, record.model_dump_json(indent=2).encode("utf-8"))
+            LOG.debug("Saved %s", path)
         except OSError as exc:
             raise StorageError(f"Cannot save {path}: {exc}") from exc
 

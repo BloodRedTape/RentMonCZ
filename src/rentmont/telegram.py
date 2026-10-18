@@ -85,6 +85,7 @@ def download_photo(client: httpx.Client, url: str) -> tuple[str, bytes, str]:
 
 def post_message(client: httpx.Client, token: str, method: str, payload: dict,
                  files: dict[str, tuple[str, bytes, str]] | None = None) -> TelegramDelivery | dict:
+    LOG.debug("Telegram request: %s", method)
     url = f"https://api.telegram.org/bot{token}/{method}"
     if files:
         response = client.post(url, data=payload, files=files, timeout=90)
@@ -101,6 +102,7 @@ def post_message(client: httpx.Client, token: str, method: str, payload: dict,
     if not result.get("ok"):
         raise TelegramRejected(result.get("error_code", 0),
                                str(result.get("description", "No description returned")))
+    LOG.debug("Telegram request succeeded: %s", method)
     if method in ("editMessageText", "editMessageCaption"):
         return result
     messages = result["result"] if method == "sendMediaGroup" else [result["result"]]
@@ -166,11 +168,14 @@ def send_ad(client: httpx.Client, token: str, chat: str, listing: Listing) -> Te
     for index, url in enumerate(listing.source.photos, start=1):
         try:
             photos.append(download_photo(client, str(url)))
+            LOG.debug("Listing %s photo #%d downloaded (%d bytes)",
+                      listing.source.id, index, len(photos[-1][1]))
         except httpx.HTTPStatusError as exc:
-            LOG.warning("Photo #%d download failed (HTTP %d); skipping",
-                        index, exc.response.status_code)
+            LOG.warning("Listing %s photo #%d download failed (HTTP %d); skipping",
+                        listing.source.id, index, exc.response.status_code)
         except (httpx.HTTPError, ValueError) as exc:
-            LOG.warning("Photo #%d download failed (%s); skipping", index, type(exc).__name__)
+            LOG.warning("Listing %s photo #%d download failed (%s); skipping",
+                        listing.source.id, index, type(exc).__name__)
     if photos:
         # Keep HTML intact: slicing may break tags/entities. The compact format
         # and capped title keep normal listings within the caption limit.
@@ -193,8 +198,8 @@ def send_ad(client: httpx.Client, token: str, chat: str, listing: Listing) -> Te
             # mean Telegram accepted the album: retain the queue in that case.
             if exc.code != 400:
                 raise
-            LOG.warning("Telegram %s rejected %d photo(s): %s; sending text instead",
-                        method, len(photos), safe_description(exc.description, token))
+            LOG.warning("Listing %s: Telegram %s rejected %d photo(s): %s; sending text instead",
+                        listing.source.id, method, len(photos), safe_description(exc.description, token))
     return post_message(client, token, "sendMessage",
                         {"chat_id": chat, "text": text, "parse_mode": "HTML",
                          "link_preview_options": {"is_disabled": True}})

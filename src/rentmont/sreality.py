@@ -1,5 +1,6 @@
 """Sreality search, filters and listing links."""
 from datetime import date
+import logging
 import unicodedata
 
 import httpx
@@ -8,6 +9,7 @@ from pydantic import HttpUrl, ValidationError
 from .location import distance_to_center_km
 from .models import SourceListing
 
+LOG = logging.getLogger(__name__)
 API = "https://www.sreality.cz/api/v1"
 
 
@@ -127,11 +129,13 @@ def search(client: httpx.Client, district: int, ceiling: int) -> list[dict]:
     ads: dict[str, dict] = {}
     offset = 0
     while True:
+        LOG.debug("Fetching search page (offset=%d)", offset)
         data = api_json(client, "estates/search", category_main_cb=1,
                         category_type_cb=2, locality_district_id=district,
                         price_to=ceiling - 1, limit=100, offset=offset)
         rows = data["results"]
         total = int(data["pagination"]["total"])
+        LOG.debug("Search page received: %d rows, total=%d, offset=%d", len(rows), total, offset)
         if not rows and offset < total:
             raise RuntimeError("Unexpected empty search page")
         for ad in rows:

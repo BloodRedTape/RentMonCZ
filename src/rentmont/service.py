@@ -19,14 +19,20 @@ LOG = logging.getLogger(__name__)
 def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
             listings: tuple[Listing, ...]) -> bool:
     """Deliver this scan's eligible listings, remembering only successful sends."""
+    started = time.monotonic()
+    sent = 0
+    LOG.debug("Delivery started: %d eligible listings", len(listings))
     token = settings.telegram_bot_token.get_secret_value()
     updated = update_gone(client, store, settings)
     updated = update_changed(client, store, settings) and updated
     for listing in listings:
         ident = listing.source.id
-        if store.get_notification(ident) is not None:
+        notification = store.get_notification(ident)
+        if notification is not None:
+            LOG.debug("Listing %s delivery skipped: %s", ident, notification.status.value)
             continue
         try:
+            LOG.info("Sending new notification for listing %s", ident)
             delivery = send_ad(client, token, settings.telegram_chat_id, listing)
         except Exception as exc:
             if isinstance(exc, TelegramRejected):
@@ -38,7 +44,12 @@ def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
             return False
         cached = store.get_extraction(ident)
         store.mark_sent(ident, delivery, cached.content_hash if cached else None)
+        sent += 1
+        LOG.info("Notification sent for listing %s (method %s, chat %s, messages %s)",
+                 ident, delivery.method, delivery.chat_id, delivery.message_ids)
         time.sleep(1.1)
+    LOG.info("Delivery complete: %d sent, updates %s, %.1fs elapsed", sent,
+             "succeeded" if updated else "pending retries", time.monotonic() - started)
     return updated
 
 
@@ -52,10 +63,12 @@ def update_changed(client: httpx.Client, store: JsonStore, settings: Settings) -
         cached = store.get_extraction(ident)
         # Failed extraction must never pair new metadata with old rental facts.
         if source is None or cached is None or cached.content_hash != listing_hash(source.raw):
+            LOG.debug("Listing %s edit deferred: no matching source/extraction", ident)
             continue
         if record.content_hash == cached.content_hash:
             continue
         try:
+            LOG.info("Updating notification for changed listing %s", ident)
             listing = Listing(source=source_listing(source.raw), rental=cached.details)
             response = edit_ad(client, token, record, listing)
             store.mark_updated(ident, cached.content_hash, response)
@@ -83,15 +96,19 @@ def update_gone(client: httpx.Client, store: JsonStore, settings: Settings) -> b
             if record.gone_at is None:
                 if ident in store.current_search_ids:
                     continue
+                LOG.debug("Listing %s absent from search; checking availability", ident)
                 try:
                     gone = listing_gone(client, ident)
                 finally:
                     time.sleep(0.5)
                 if not gone:
+                    LOG.debug("Listing %s still available despite search absence", ident)
                     continue
                 record = store.mark_gone(ident)
                 LOG.info("Listing %s confirmed gone; detected at %s", ident,
                          record.gone_at.isoformat())
+            LOG.info("Updating Gone notification for listing %s (detected %s)",
+                     ident, record.gone_at.isoformat())
             mark_ad_gone(client, token, record)
             store.mark_gone(ident, notified=True)
             LOG.info("Gone notification updated for listing %s (chat %s, message %s)",
@@ -112,42 +129,62 @@ def update_gone(client: httpx.Client, store: JsonStore, settings: Settings) -> b
 
 def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings,
          *, reextract: bool = False) -> ScanStats:
+    started = time.monotonic()
     initial = not store.initialized
+    LOG.info("Scan started (initial=%s, reextract=%s)", initial, reextract)
     ads = search(client, settings.district_id, settings.max_rent_kc)
     store.set_current_search({str(ad["hash_id"]) for ad in ads})
+    LOG.info("Search complete: %d listings", len(ads))
     counts = {"llm_calls": 0, "cache_hits": 0, "excluded": 0, "errors": 0}
     listings = []
     for ad in ads:
         ident = str(ad["hash_id"])
         requested = False
         try:
+            previous = store.get_source(ident)
             requested = True
+            LOG.debug("Fetching detail for listing %s", ident)
             detail = api_json(client, f"estates/{ident}")["result"]
             if str(detail["hash_id"]) != ident:
                 raise ValueError("Sreality detail ID does not match the requested listing")
             # Keep raw data even when subsequent extraction/filtering fails.
             store.save_source(detail)
             content_hash = listing_hash(detail)
+            if previous is None:
+                LOG.info("New listing discovered: %s", ident)
+            elif listing_hash(previous.raw) != content_hash:
+                LOG.info("Listing %s content changed (hash %s)", ident, content_hash)
             source = source_listing(detail)
-            if source_rejection(source, settings.district_id, settings.max_rent_kc) is not None:
+            reason = source_rejection(source, settings.district_id, settings.max_rent_kc)
+            if reason is not None:
+                LOG.debug("Listing %s excluded by source filter: %s", ident, reason.value)
                 counts["excluded"] += 1
                 continue
             cached = store.get_extraction(ident)
             if cached is not None and cached.content_hash == content_hash and not reextract:
                 rental = cached.details
                 counts["cache_hits"] += 1
+                LOG.debug("Listing %s extraction cache hit", ident)
             else:
                 counts["llm_calls"] += 1
+                reason = ("forced" if reextract else "missing" if cached is None
+                          else "changed or missing hash")
+                LOG.info("Extracting listing %s (reason: %s)", ident, reason)
                 rental = extract(ai, settings.openai_model, detail)
                 store.save_extraction(ident, rental, content_hash)
                 LOG.info("Extracted listing %s (hash %s)", ident, content_hash)
-            if rental_rejection(rental, settings.max_rent_kc,
-                                settings.max_rent_and_utilities_kc) is not None:
+            reason = rental_rejection(rental, settings.max_rent_kc,
+                                      settings.max_rent_and_utilities_kc)
+            if reason is not None:
+                LOG.debug("Listing %s excluded by rental filter: %s", ident, reason.value)
                 counts["excluded"] += 1
                 continue
             listings.append(Listing(source=source, rental=rental))
+            LOG.debug("Listing %s eligible", ident)
             if initial and not settings.notify_existing:
-                store.suppress(ident)
+                if store.get_notification(ident) is None:
+                    store.suppress(ident)
+                    LOG.info("Initial notification suppressed for listing %s", ident)
         except StorageError:
             raise
         except Exception as exc:
@@ -162,6 +199,10 @@ def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings,
     store.export_listings(settings.data_dir / "listings.json", listings)
     if stats.succeeded:
         store.mark_initialized()
-    LOG.info("Scan complete: %d results, %d LLM calls, %d cache hits, %d excluded, %d errors",
-             stats.search_results, stats.llm_calls, stats.cache_hits, stats.excluded, stats.errors)
+        if initial:
+            LOG.info("Initial scan completed; monitor initialized")
+    LOG.info("Scan complete: %d results, %d eligible, %d LLM calls, %d cache hits, "
+             "%d excluded, %d errors, %.1fs elapsed",
+             stats.search_results, len(stats.listings), stats.llm_calls, stats.cache_hits,
+             stats.excluded, stats.errors, time.monotonic() - started)
     return stats
