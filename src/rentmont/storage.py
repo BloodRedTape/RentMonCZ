@@ -76,9 +76,10 @@ class JsonStore:
     def get_extraction(self, ident: str) -> ExtractionRecord | None:
         return self._read(self._listing_path(ident, "extraction.json"), ExtractionRecord)
 
-    def save_extraction(self, ident: str, details: RentalDetails) -> None:
+    def save_extraction(self, ident: str, details: RentalDetails,
+                        content_hash: str | None = None) -> None:
         self._write(self._listing_path(ident, "extraction.json"),
-                    ExtractionRecord(details=details, extracted_at=now()))
+                    ExtractionRecord(details=details, extracted_at=now(), content_hash=content_hash))
 
     def get_notification(self, ident: str) -> NotificationRecord | None:
         return self._read(self._listing_path(ident, "notification.json"), NotificationRecord)
@@ -102,9 +103,19 @@ class JsonStore:
         self._write(self._listing_path(ident, "notification.json"), record)
         return record
 
-    def mark_sent(self, ident: str, delivery: TelegramDelivery) -> None:
+    def mark_updated(self, ident: str, content_hash: str, response: dict) -> None:
+        record = self.get_notification(ident)
+        if record is None or record.status != NotificationStatus.SENT:
+            raise StorageError("Cannot update an unsent notification")
+        self._write(self._listing_path(ident, "notification.json"),
+                    record.model_copy(update={"content_hash": content_hash,
+                                              "telegram_response": response}))
+
+    def mark_sent(self, ident: str, delivery: TelegramDelivery,
+                  content_hash: str | None = None) -> None:
         self._write(self._listing_path(ident, "notification.json"),
                     NotificationRecord(status=NotificationStatus.SENT, sent_at=now(),
+                                       content_hash=content_hash,
                                        chat_id=delivery.chat_id, message_ids=delivery.message_ids,
                                        telegram_method=delivery.method,
                                        telegram_response=delivery.response))

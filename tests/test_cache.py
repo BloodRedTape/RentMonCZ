@@ -42,12 +42,12 @@ class ScanTests(unittest.TestCase):
                 self.assertEqual(self.store.get_extraction("123").details, facts)
                 self.assertEqual(stats.listings, ())
 
-    def test_changed_input_requires_explicit_reextract(self):
+    def test_changed_input_automatically_reextracts(self):
         self.run_scan(facts=rental(rent=None))
         changed = api_ad() | {"advert_description": "Changed"}
         stats, calls = self.run_scan(detail=changed)
-        self.assertEqual(calls, 0)
-        self.assertEqual(stats.excluded, 1)
+        self.assertEqual(calls, 1)
+        self.assertEqual(stats.excluded, 0)
         stats, calls = self.run_scan(detail=changed, reextract=True)
         self.assertEqual(calls, 1)
         self.assertEqual(len(stats.listings), 1)
@@ -64,11 +64,11 @@ class ScanTests(unittest.TestCase):
         self.assertTrue(stats.succeeded)
         self.assertEqual(calls, 1)
 
-    def test_known_source_is_not_refetched_or_resent(self):
+    def test_known_source_is_refreshed_but_not_resent(self):
         stats, _ = self.run_scan()
         with patch("rentmont.service.send_ad", return_value=delivery()) as send:
             self.assertTrue(deliver(None, self.store, self.settings, stats.listings))
-            changed = api_ad() | {"edited": "2026-10-15"}
+            changed = api_ad()
             stats, calls = self.run_scan(detail=changed)
             self.assertTrue(deliver(None, self.store, self.settings, stats.listings))
         self.assertEqual(send.call_count, 1)
@@ -76,7 +76,7 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(stats.listings[0].source.updated_at.isoformat(), "2026-10-14")
         self.assertEqual(self.store.get_notification("123").status, NotificationStatus.SENT)
 
-    def test_detail_requests_only_for_new_ids_and_forced_refresh(self):
+    def test_detail_requested_every_scan(self):
         with patch("rentmont.service.search", return_value=[api_ad()]), \
              patch("rentmont.service.api_json", return_value={"result": api_ad()}) as request, \
              patch("rentmont.service.extract", return_value=rental()):
@@ -84,17 +84,17 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(request.call_count, 1)
             self.store = JsonStore(self.path)
             scan(None, None, self.store, self.settings)
-            self.assertEqual(request.call_count, 1)
-            scan(None, None, self.store, self.settings, reextract=True)
             self.assertEqual(request.call_count, 2)
+            scan(None, None, self.store, self.settings, reextract=True)
+            self.assertEqual(request.call_count, 3)
 
-    def test_failed_extraction_retries_without_refetching_source(self):
+    def test_failed_extraction_retries_with_fresh_source(self):
         self.run_scan(error=RuntimeError("LLM failed"))
         with patch("rentmont.service.search", return_value=[api_ad()]), \
-             patch("rentmont.service.api_json") as request, \
+             patch("rentmont.service.api_json", return_value={"result": api_ad()}) as request, \
              patch("rentmont.service.extract", return_value=rental()) as extract:
             stats = scan(None, None, self.store, self.settings)
-        request.assert_not_called()
+        request.assert_called_once()
         extract.assert_called_once()
         self.assertTrue(stats.succeeded)
         self.assertEqual(len(stats.listings), 1)

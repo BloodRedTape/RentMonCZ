@@ -1,4 +1,5 @@
 """OpenAI structured payment extraction."""
+import hashlib
 import json
 
 from openai import OpenAI
@@ -13,6 +14,19 @@ EXTRACTION_FIELDS = (
     "tenant_not_pay_commission", "price_unit_cb", "price_currency_cb",
     "category_sub_cb", "usable_area", "floor_area", "ready_date",
 )
+
+
+HASH_FIELDS = (
+    "advert_name", "advert_description", "price_czk", "price_unit_cb",
+    "price_currency_cb", "price_note", "refundable_deposit", "since", "edited",
+)
+
+
+def listing_hash(detail: dict) -> str:
+    # Canonical serialization separates values unambiguously and ignores key order.
+    content = json.dumps([detail.get(key) for key in HASH_FIELDS],
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def extraction_content(detail: dict) -> str:

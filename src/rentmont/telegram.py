@@ -84,7 +84,7 @@ def download_photo(client: httpx.Client, url: str) -> tuple[str, bytes, str]:
 
 
 def post_message(client: httpx.Client, token: str, method: str, payload: dict,
-                 files: dict[str, tuple[str, bytes, str]] | None = None) -> TelegramDelivery | None:
+                 files: dict[str, tuple[str, bytes, str]] | None = None) -> TelegramDelivery | dict:
     url = f"https://api.telegram.org/bot{token}/{method}"
     if files:
         response = client.post(url, data=payload, files=files, timeout=90)
@@ -102,7 +102,7 @@ def post_message(client: httpx.Client, token: str, method: str, payload: dict,
         raise TelegramRejected(result.get("error_code", 0),
                                str(result.get("description", "No description returned")))
     if method in ("editMessageText", "editMessageCaption"):
-        return None
+        return result
     messages = result["result"] if method == "sendMediaGroup" else [result["result"]]
     if not messages:
         raise ValueError("Telegram returned no messages")
@@ -112,6 +112,29 @@ def post_message(client: httpx.Client, token: str, method: str, payload: dict,
     return TelegramDelivery(method=method, chat_id=chat_id,
                             message_ids=tuple(message["message_id"] for message in messages),
                             response=result)
+
+
+def edit_ad(client: httpx.Client, token: str, record: NotificationRecord,
+            listing: Listing) -> dict:
+    is_text = record.telegram_method == "sendMessage"
+    field = "text" if is_text else "caption"
+    text = format_message(listing)
+    payload = {"chat_id": record.chat_id, "message_id": record.message_ids[0],
+               field: text, "parse_mode": "HTML"}
+    if is_text:
+        payload["link_preview_options"] = {"is_disabled": True}
+    try:
+        response = post_message(client, token,
+                                "editMessageText" if is_text else "editMessageCaption", payload)
+    except TelegramRejected as exc:
+        if exc.code != 400 or "message is not modified" not in exc.description.lower():
+            raise
+        # Dates or price notes may change without changing the rendered message.
+        # Preserve its original plain text/entities for a future Gone edit.
+        return record.telegram_response
+    # For albums only the first message carries the caption and is edited.
+    # Keeping that message is sufficient for subsequent edits, including Gone.
+    return response
 
 
 def mark_ad_gone(client: httpx.Client, token: str, record: NotificationRecord) -> None:

@@ -6,12 +6,12 @@ import httpx
 from openai import OpenAI
 
 from .config import Settings
-from .extraction import extract
+from .extraction import extract, listing_hash
 from .filters import rental_rejection, source_rejection
 from .models import Listing, ScanStats
 from .sreality import api_json, listing_gone, search, source_listing
 from .storage import JsonStore, StorageError
-from .telegram import TelegramRejected, mark_ad_gone, safe_description, send_ad
+from .telegram import TelegramRejected, edit_ad, mark_ad_gone, safe_description, send_ad
 
 LOG = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
     """Deliver this scan's eligible listings, remembering only successful sends."""
     token = settings.telegram_bot_token.get_secret_value()
     updated = update_gone(client, store, settings)
+    updated = update_changed(client, store, settings) and updated
     for listing in listings:
         ident = listing.source.id
         if store.get_notification(ident) is not None:
@@ -35,9 +36,40 @@ def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
                 LOG.warning("Telegram delivery failed for listing %s (%s); will retry",
                             ident, type(exc).__name__)
             return False
-        store.mark_sent(ident, delivery)
+        cached = store.get_extraction(ident)
+        store.mark_sent(ident, delivery, cached.content_hash if cached else None)
         time.sleep(1.1)
     return updated
+
+
+def update_changed(client: httpx.Client, store: JsonStore, settings: Settings) -> bool:
+    token = settings.telegram_bot_token.get_secret_value()
+    succeeded = True
+    for ident, record in store.sent_notifications():
+        if ident not in store.current_search_ids or record.gone_at or record.chat_id is None:
+            continue
+        source = store.get_source(ident)
+        cached = store.get_extraction(ident)
+        # Failed extraction must never pair new metadata with old rental facts.
+        if source is None or cached is None or cached.content_hash != listing_hash(source.raw):
+            continue
+        if record.content_hash == cached.content_hash:
+            continue
+        try:
+            listing = Listing(source=source_listing(source.raw), rental=cached.details)
+            response = edit_ad(client, token, record, listing)
+            store.mark_updated(ident, cached.content_hash, response)
+            LOG.info("Updated changed listing %s (chat %s, message %s)",
+                     ident, record.chat_id, record.message_ids[0])
+            time.sleep(1.1)
+        except StorageError:
+            raise
+        except Exception as exc:
+            succeeded = False
+            description = (safe_description(exc.description, token)
+                           if isinstance(exc, TelegramRejected) else type(exc).__name__)
+            LOG.warning("Listing %s update failed (%s); will retry", ident, description)
+    return succeeded
 
 
 def update_gone(client: httpx.Client, store: JsonStore, settings: Settings) -> bool:
@@ -58,8 +90,12 @@ def update_gone(client: httpx.Client, store: JsonStore, settings: Settings) -> b
                 if not gone:
                     continue
                 record = store.mark_gone(ident)
+                LOG.info("Listing %s confirmed gone; detected at %s", ident,
+                         record.gone_at.isoformat())
             mark_ad_gone(client, token, record)
             store.mark_gone(ident, notified=True)
+            LOG.info("Gone notification updated for listing %s (chat %s, message %s)",
+                     ident, record.chat_id, record.message_ids[0])
             time.sleep(1.1)
         except StorageError:
             raise
@@ -85,28 +121,26 @@ def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings,
         ident = str(ad["hash_id"])
         requested = False
         try:
-            saved_source = store.get_source(ident)
-            if saved_source is None or reextract:
-                requested = True
-                detail = api_json(client, f"estates/{ident}")["result"]
-                if str(detail["hash_id"]) != ident:
-                    raise ValueError("Sreality detail ID does not match the requested listing")
-                # Keep raw data even when subsequent extraction/filtering fails.
-                store.save_source(detail)
-            else:
-                detail = saved_source.raw
+            requested = True
+            detail = api_json(client, f"estates/{ident}")["result"]
+            if str(detail["hash_id"]) != ident:
+                raise ValueError("Sreality detail ID does not match the requested listing")
+            # Keep raw data even when subsequent extraction/filtering fails.
+            store.save_source(detail)
+            content_hash = listing_hash(detail)
             source = source_listing(detail)
             if source_rejection(source, settings.district_id, settings.max_rent_kc) is not None:
                 counts["excluded"] += 1
                 continue
             cached = store.get_extraction(ident)
-            if cached is not None and not reextract:
+            if cached is not None and cached.content_hash == content_hash and not reextract:
                 rental = cached.details
                 counts["cache_hits"] += 1
             else:
                 counts["llm_calls"] += 1
                 rental = extract(ai, settings.openai_model, detail)
-                store.save_extraction(ident, rental)
+                store.save_extraction(ident, rental, content_hash)
+                LOG.info("Extracted listing %s (hash %s)", ident, content_hash)
             if rental_rejection(rental, settings.max_rent_kc,
                                 settings.max_rent_and_utilities_kc) is not None:
                 counts["excluded"] += 1

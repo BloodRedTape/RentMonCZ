@@ -89,6 +89,7 @@ class SourceRecord(Model):
 
 
 class ExtractionRecord(Model):
+    content_hash: str | None = None
     details: RentalDetails
     extracted_at: datetime
 
@@ -107,6 +108,7 @@ class NotificationRecord(Model):
     message_ids: tuple[Annotated[int, Field(strict=True, gt=0)], ...] = ()
     telegram_method: Literal["sendMessage", "sendPhoto", "sendMediaGroup"] | None = None
     telegram_response: dict | None = None
+    content_hash: str | None = None
     gone_at: datetime | None = None
     gone_notified: bool = False
 
