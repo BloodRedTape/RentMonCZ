@@ -107,6 +107,8 @@ class NotificationRecord(Model):
     message_ids: tuple[Annotated[int, Field(strict=True, gt=0)], ...] = ()
     telegram_method: Literal["sendMessage", "sendPhoto", "sendMediaGroup"] | None = None
     telegram_response: dict | None = None
+    gone_at: datetime | None = None
+    gone_notified: bool = False
 
     @model_validator(mode="after")
     def validate_sent_at(self):

@@ -20,6 +20,23 @@ def api_json(client: httpx.Client, path: str, **params) -> dict:
     return data
 
 
+def listing_gone(client: httpx.Client, ident: str) -> bool:
+    """Only explicit unavailability is evidence; search absence alone is not."""
+    response = client.get(f"{API}/estates/{ident}")
+    if response.status_code in (404, 410):
+        return True
+    response.raise_for_status()
+    data = response.json()
+    status = data.get("status_code", 200)
+    if status in (404, 410):
+        return True
+    if status != 200:
+        raise RuntimeError("Sreality returned a non-success status")
+    if str(data["result"]["hash_id"]) != ident:
+        raise ValueError("Sreality detail ID does not match the requested listing")
+    return False
+
+
 def photo_download_url(url: str) -> str:
     """Use the same image rendition as Sreality's listing page.
 

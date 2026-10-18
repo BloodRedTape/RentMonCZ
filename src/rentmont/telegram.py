@@ -6,7 +6,7 @@ import re
 
 import httpx
 
-from .models import Listing, TelegramDelivery
+from .models import Listing, NotificationRecord, TelegramDelivery
 from .sreality import photo_download_url
 
 LOG = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ def download_photo(client: httpx.Client, url: str) -> tuple[str, bytes, str]:
 
 
 def post_message(client: httpx.Client, token: str, method: str, payload: dict,
-                 files: dict[str, tuple[str, bytes, str]] | None = None) -> TelegramDelivery:
+                 files: dict[str, tuple[str, bytes, str]] | None = None) -> TelegramDelivery | None:
     url = f"https://api.telegram.org/bot{token}/{method}"
     if files:
         response = client.post(url, data=payload, files=files, timeout=90)
@@ -101,6 +101,8 @@ def post_message(client: httpx.Client, token: str, method: str, payload: dict,
     if not result.get("ok"):
         raise TelegramRejected(result.get("error_code", 0),
                                str(result.get("description", "No description returned")))
+    if method in ("editMessageText", "editMessageCaption"):
+        return None
     messages = result["result"] if method == "sendMediaGroup" else [result["result"]]
     if not messages:
         raise ValueError("Telegram returned no messages")
@@ -110,6 +112,29 @@ def post_message(client: httpx.Client, token: str, method: str, payload: dict,
     return TelegramDelivery(method=method, chat_id=chat_id,
                             message_ids=tuple(message["message_id"] for message in messages),
                             response=result)
+
+
+def mark_ad_gone(client: httpx.Client, token: str, record: NotificationRecord) -> None:
+    """Edit the original text/caption, keeping its Telegram formatting entities."""
+    if record.gone_at is None or not record.telegram_response or not record.message_ids:
+        raise ValueError("Missing original delivery metadata")
+    messages = record.telegram_response["result"]
+    original = messages[0] if isinstance(messages, list) else messages
+    is_text = record.telegram_method == "sendMessage"
+    field = "text" if is_text else "caption"
+    entities = "entities" if is_text else "caption_entities"
+    payload = {"chat_id": record.chat_id, "message_id": record.message_ids[0],
+               field: original[field] + f"\n🔴 Gone {record.gone_at:%d.%m.%Y}"}
+    if entities in original:
+        payload[entities] = original[entities]
+    if is_text:
+        payload["link_preview_options"] = {"is_disabled": True}
+    try:
+        post_message(client, token, "editMessageText" if is_text else "editMessageCaption", payload)
+    except TelegramRejected as exc:
+        # A previous edit may have succeeded before a timeout or process crash.
+        if exc.code != 400 or "message is not modified" not in exc.description.lower():
+            raise
 
 
 def send_ad(client: httpx.Client, token: str, chat: str, listing: Listing) -> TelegramDelivery:

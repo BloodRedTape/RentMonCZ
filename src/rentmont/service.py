@@ -9,9 +9,9 @@ from .config import Settings
 from .extraction import extract
 from .filters import rental_rejection, source_rejection
 from .models import Listing, ScanStats
-from .sreality import api_json, search, source_listing
+from .sreality import api_json, listing_gone, search, source_listing
 from .storage import JsonStore, StorageError
-from .telegram import TelegramRejected, safe_description, send_ad
+from .telegram import TelegramRejected, mark_ad_gone, safe_description, send_ad
 
 LOG = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
             listings: tuple[Listing, ...]) -> bool:
     """Deliver this scan's eligible listings, remembering only successful sends."""
     token = settings.telegram_bot_token.get_secret_value()
+    updated = update_gone(client, store, settings)
     for listing in listings:
         ident = listing.source.id
         if store.get_notification(ident) is not None:
@@ -36,7 +37,41 @@ def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
             return False
         store.mark_sent(ident, delivery)
         time.sleep(1.1)
-    return True
+    return updated
+
+
+def update_gone(client: httpx.Client, store: JsonStore, settings: Settings) -> bool:
+    """Confirm missing ads and retry pending edits without changing detection dates."""
+    token = settings.telegram_bot_token.get_secret_value()
+    succeeded = True
+    for ident, record in store.sent_notifications():
+        if record.gone_notified or record.chat_id is None:
+            continue
+        try:
+            if record.gone_at is None:
+                if ident in store.current_search_ids:
+                    continue
+                try:
+                    gone = listing_gone(client, ident)
+                finally:
+                    time.sleep(0.5)
+                if not gone:
+                    continue
+                record = store.mark_gone(ident)
+            mark_ad_gone(client, token, record)
+            store.mark_gone(ident, notified=True)
+            time.sleep(1.1)
+        except StorageError:
+            raise
+        except Exception as exc:
+            succeeded = False
+            if isinstance(exc, TelegramRejected):
+                LOG.warning("Gone update for %s rejected: %s; will retry", ident,
+                            safe_description(exc.description, token))
+            else:
+                LOG.warning("Gone check/update for %s failed (%s); will retry",
+                            ident, type(exc).__name__)
+    return succeeded
 
 
 def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings,

@@ -83,6 +83,25 @@ class JsonStore:
     def get_notification(self, ident: str) -> NotificationRecord | None:
         return self._read(self._listing_path(ident, "notification.json"), NotificationRecord)
 
+    def sent_notifications(self) -> list[tuple[str, NotificationRecord]]:
+        records = []
+        for directory in sorted(self.directory.iterdir()):
+            if not re.fullmatch(r"[0-9]+", directory.name):
+                continue
+            record = self.get_notification(directory.name)
+            if record is not None and record.status == NotificationStatus.SENT:
+                records.append((directory.name, record))
+        return records
+
+    def mark_gone(self, ident: str, *, notified: bool = False) -> NotificationRecord:
+        record = self.get_notification(ident)
+        if record is None or record.status != NotificationStatus.SENT:
+            raise StorageError("Cannot mark an unsent notification as gone")
+        record = record.model_copy(update={"gone_at": record.gone_at or now(),
+                                           "gone_notified": notified})
+        self._write(self._listing_path(ident, "notification.json"), record)
+        return record
+
     def mark_sent(self, ident: str, delivery: TelegramDelivery) -> None:
         self._write(self._listing_path(ident, "notification.json"),
                     NotificationRecord(status=NotificationStatus.SENT, sent_at=now(),
