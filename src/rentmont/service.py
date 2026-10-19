@@ -64,7 +64,7 @@ def update_changed(client: httpx.Client, store: JsonStore, settings: Settings) -
         cached = store.get_extraction(ident)
         # Failed extraction must never pair new metadata with old rental facts.
         if (source is None or cached is None
-                or cached.global_hash != global_hash(source.raw, settings.telegram_max_photos)
+                or cached.global_hash != global_hash(source.raw)
                 or cached.llm_hash != llm_hash(source.raw)):
             LOG.debug("Listing %s edit deferred: no matching source/extraction", ident)
             continue
@@ -153,10 +153,10 @@ def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings,
                 raise ValueError("Sreality detail ID does not match the requested listing")
             # Keep raw data even when subsequent extraction/filtering fails.
             store.save_source(detail)
-            current_hash = global_hash(detail, settings.telegram_max_photos)
+            current_hash = global_hash(detail)
             if previous is None:
                 LOG.info("New listing discovered: %s", ident)
-            elif global_hash(previous.raw, settings.telegram_max_photos) != current_hash:
+            elif global_hash(previous.raw) != current_hash:
                 LOG.info("Listing %s content changed (global hash %s)", ident, current_hash)
             source = source_listing(detail, settings.telegram_max_photos)
             reason = source_rejection(source, settings.district_id, settings.max_rent_kc)

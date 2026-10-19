@@ -5,7 +5,7 @@ import json
 from openai import OpenAI
 
 from .models import RentalDetails
-from .sreality import is_room_category, listing_photos
+from .sreality import is_room_category
 
 
 EXTRACTION_FIELDS = (
@@ -23,13 +23,10 @@ HASH_FIELDS = (
 )
 
 
-def global_hash(detail: dict, max_photos: int = 3) -> str:
-    # Hash the same ordered selection used for Telegram, plus the limit itself:
-    # changing the limit must invalidate even listings with fewer photos.
-    data = {"fields": [detail.get(key) for key in HASH_FIELDS],
-            "max_photos": max_photos,
-            "photos": [str(url) for url in listing_photos(detail, max_photos)]}
-    content = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def global_hash(detail: dict) -> str:
+    # Photos and their configured limit do not affect edits of existing messages.
+    content = json.dumps([detail.get(key) for key in HASH_FIELDS],
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
