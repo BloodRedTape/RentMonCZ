@@ -6,7 +6,7 @@ import httpx
 from openai import OpenAI
 
 from .config import Settings
-from .extraction import extract, listing_hash
+from .extraction import extract, global_hash, llm_hash
 from .filters import rental_rejection, source_rejection
 from .models import Listing, ScanStats
 from .sreality import api_json, listing_gone, search, source_listing
@@ -43,7 +43,8 @@ def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
                             ident, type(exc).__name__)
             return False
         cached = store.get_extraction(ident)
-        store.mark_sent(ident, delivery, cached.content_hash if cached else None)
+        store.mark_sent(ident, delivery, cached.global_hash if cached else None,
+                        cached.llm_hash if cached else None)
         sent += 1
         LOG.info("Notification sent for listing %s (method %s, chat %s, messages %s)",
                  ident, delivery.method, delivery.chat_id, delivery.message_ids)
@@ -62,16 +63,19 @@ def update_changed(client: httpx.Client, store: JsonStore, settings: Settings) -
         source = store.get_source(ident)
         cached = store.get_extraction(ident)
         # Failed extraction must never pair new metadata with old rental facts.
-        if source is None or cached is None or cached.content_hash != listing_hash(source.raw):
+        if (source is None or cached is None
+                or cached.global_hash != global_hash(source.raw, settings.telegram_max_photos)
+                or cached.llm_hash != llm_hash(source.raw)):
             LOG.debug("Listing %s edit deferred: no matching source/extraction", ident)
             continue
-        if record.content_hash == cached.content_hash:
+        if record.global_hash == cached.global_hash and record.llm_hash == cached.llm_hash:
             continue
         try:
             LOG.info("Updating notification for changed listing %s", ident)
-            listing = Listing(source=source_listing(source.raw), rental=cached.details)
+            listing = Listing(source=source_listing(source.raw, settings.telegram_max_photos),
+                              rental=cached.details)
             response = edit_ad(client, token, record, listing)
-            store.mark_updated(ident, cached.content_hash, response)
+            store.mark_updated(ident, cached.global_hash, response, cached.llm_hash)
             LOG.info("Updated changed listing %s (chat %s, message %s)",
                      ident, record.chat_id, record.message_ids[0])
             time.sleep(1.1)
@@ -149,30 +153,36 @@ def scan(client: httpx.Client, ai: OpenAI, store: JsonStore, settings: Settings,
                 raise ValueError("Sreality detail ID does not match the requested listing")
             # Keep raw data even when subsequent extraction/filtering fails.
             store.save_source(detail)
-            content_hash = listing_hash(detail)
+            current_hash = global_hash(detail, settings.telegram_max_photos)
             if previous is None:
                 LOG.info("New listing discovered: %s", ident)
-            elif listing_hash(previous.raw) != content_hash:
-                LOG.info("Listing %s content changed (hash %s)", ident, content_hash)
-            source = source_listing(detail)
+            elif global_hash(previous.raw, settings.telegram_max_photos) != current_hash:
+                LOG.info("Listing %s content changed (global hash %s)", ident, current_hash)
+            source = source_listing(detail, settings.telegram_max_photos)
             reason = source_rejection(source, settings.district_id, settings.max_rent_kc)
             if reason is not None:
                 LOG.debug("Listing %s excluded by source filter: %s", ident, reason.value)
                 counts["excluded"] += 1
                 continue
             cached = store.get_extraction(ident)
-            if cached is not None and cached.content_hash == content_hash and not reextract:
+            input_hash = llm_hash(detail)
+            if cached is not None and cached.llm_hash == input_hash and not reextract:
                 rental = cached.details
                 counts["cache_hits"] += 1
                 LOG.debug("Listing %s extraction cache hit", ident)
+                if cached.global_hash != current_hash:
+                    store.update_extraction_global_hash(ident, current_hash)
+                    LOG.info("Listing %s metadata updated; LLM input unchanged, reusing extraction",
+                             ident)
             else:
                 counts["llm_calls"] += 1
                 reason = ("forced" if reextract else "missing" if cached is None
-                          else "changed or missing hash")
+                          else "changed or missing LLM hash")
                 LOG.info("Extracting listing %s (reason: %s)", ident, reason)
                 rental = extract(ai, settings.openai_model, detail)
-                store.save_extraction(ident, rental, content_hash)
-                LOG.info("Extracted listing %s (hash %s)", ident, content_hash)
+                store.save_extraction(ident, rental, current_hash, input_hash)
+                LOG.info("Extracted listing %s (global hash %s, LLM hash %s)",
+                         ident, current_hash, input_hash)
             reason = rental_rejection(rental, settings.max_rent_kc,
                                       settings.max_rent_and_utilities_kc)
             if reason is not None:

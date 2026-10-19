@@ -54,7 +54,7 @@ class SourceListing(Model):
     distance_to_center_km: float | None = Field(..., ge=0)
     published_at: date | None
     updated_at: date | None
-    photos: tuple[HttpUrl, ...] = Field(max_length=3)
+    photos: tuple[HttpUrl, ...] = Field(max_length=10)
 
 
 class ExclusionReason(str, Enum):
@@ -88,8 +88,19 @@ class SourceRecord(Model):
         return self
 
 
-class ExtractionRecord(Model):
-    content_hash: str | None = None
+class HashedRecord(Model):
+    global_hash: str | None = None
+    llm_hash: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_obsolete_hash(cls, value):
+        if isinstance(value, dict) and "content_hash" in value:
+            return {key: item for key, item in value.items() if key != "content_hash"}
+        return value
+
+
+class ExtractionRecord(HashedRecord):
     details: RentalDetails
     extracted_at: datetime
 
@@ -101,14 +112,13 @@ class TelegramDelivery(Model):
     response: dict
 
 
-class NotificationRecord(Model):
+class NotificationRecord(HashedRecord):
     status: NotificationStatus
     sent_at: datetime | None = None
     chat_id: int | None = Field(default=None, strict=True)
     message_ids: tuple[Annotated[int, Field(strict=True, gt=0)], ...] = ()
     telegram_method: Literal["sendMessage", "sendPhoto", "sendMediaGroup"] | None = None
     telegram_response: dict | None = None
-    content_hash: str | None = None
     gone_at: datetime | None = None
     gone_notified: bool = False
 

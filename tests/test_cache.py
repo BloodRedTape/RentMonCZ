@@ -42,6 +42,47 @@ class ScanTests(unittest.TestCase):
                 self.assertEqual(self.store.get_extraction("123").details, facts)
                 self.assertEqual(stats.listings, ())
 
+    def test_dates_reuse_llm_facts_and_preserve_extraction_time(self):
+        self.run_scan()
+        before = self.store.get_extraction("123")
+        changed = api_ad() | {"since": "2026-10-02", "edited": "2026-10-20"}
+        stats, calls = self.run_scan(detail=changed)
+        after = self.store.get_extraction("123")
+        self.assertEqual(calls, 0)
+        self.assertEqual(stats.cache_hits, 1)
+        self.assertEqual(before.llm_hash, after.llm_hash)
+        self.assertNotEqual(before.global_hash, after.global_hash)
+        self.assertEqual(before.extracted_at, after.extracted_at)
+        self.assertEqual(stats.listings[0].source.updated_at.isoformat(), "2026-10-20")
+        self.store = JsonStore(self.path)
+        self.assertEqual(self.run_scan(detail=changed)[1], 0)
+
+    def test_llm_only_fields_trigger_extraction(self):
+        for field, value in (("usable_area", 42), ("floor_area", 45),
+                             ("ready_date", "2026-12-01"),
+                             ("tenant_not_pay_commission", True)):
+            with self.subTest(field=field):
+                self.run_scan()
+                stats, calls = self.run_scan(detail=api_ad() | {field: value})
+                self.assertTrue(stats.succeeded)
+                self.assertEqual(calls, 1)
+
+    def test_missing_llm_hash_reextracts_and_failed_migration_retries(self):
+        self.run_scan()
+        path = self.path / "123/extraction.json"
+        old = json.loads(path.read_text())
+        del old["llm_hash"]
+        path.write_text(json.dumps(old))
+        stats, calls = self.run_scan(error=RuntimeError("LLM failed"))
+        self.assertEqual(calls, 1)
+        self.assertFalse(stats.succeeded)
+        self.assertIsNone(self.store.get_extraction("123").llm_hash)
+        stats, calls = self.run_scan()
+        self.assertEqual(calls, 1)
+        self.assertTrue(stats.succeeded)
+        self.assertIsNotNone(self.store.get_extraction("123").llm_hash)
+        self.assertEqual(self.run_scan()[1], 0)
+
     def test_changed_input_automatically_reextracts(self):
         self.run_scan(facts=rental(rent=None))
         changed = api_ad() | {"advert_description": "Changed"}

@@ -52,8 +52,12 @@ def photo_download_url(url: str) -> str:
     return url
 
 
-def listing_photos(detail: dict) -> list[HttpUrl]:
-    """Take up to three unique valid image URLs in the API's original order."""
+def listing_photos(detail: dict, max_photos: int = 3) -> list[HttpUrl]:
+    """Take the configured number of unique valid URLs in API order."""
+    if not 0 <= max_photos <= 10:
+        raise ValueError("Expected a photo limit between 0 and 10")
+    if max_photos == 0:
+        return []
     photos = []
     seen = set()
     images = detail.get("advert_images") or []
@@ -74,7 +78,7 @@ def listing_photos(detail: dict) -> list[HttpUrl]:
             continue
         seen.add(str(parsed))
         photos.append(parsed)
-        if len(photos) == 3:
+        if len(photos) == max_photos:
             break
     return photos
 
@@ -101,7 +105,7 @@ def is_room_category(detail: dict) -> bool:
     return str(category.get("name", "")).strip().casefold() in {"pokoj", "pokoje"}
 
 
-def source_listing(detail: dict) -> SourceListing:
+def source_listing(detail: dict, max_photos: int = 3) -> SourceListing:
     """Boundary adapter: external dictionaries become validated domain data."""
     locality = detail.get("locality") or {}
     return SourceListing(
@@ -111,7 +115,7 @@ def source_listing(detail: dict) -> SourceListing:
         district_id=locality.get("district_id"), api_price_kc=detail.get("price_czk"),
         is_room_category=is_room_category(detail),
         distance_to_center_km=distance_to_center_km(locality),
-        photos=listing_photos(detail), **listing_dates(detail),
+        photos=listing_photos(detail, max_photos), **listing_dates(detail),
     )
 
 

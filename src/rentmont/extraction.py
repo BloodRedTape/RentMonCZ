@@ -5,7 +5,7 @@ import json
 from openai import OpenAI
 
 from .models import RentalDetails
-from .sreality import is_room_category
+from .sreality import is_room_category, listing_photos
 
 
 EXTRACTION_FIELDS = (
@@ -18,20 +18,29 @@ EXTRACTION_FIELDS = (
 
 HASH_FIELDS = (
     "advert_name", "advert_description", "price_czk", "price_unit_cb",
-    "price_currency_cb", "price_note", "refundable_deposit", "since", "edited",
+    "price_currency_cb", "price_note", "cost_of_living", "commission",
+    "refundable_deposit", "since", "edited",
 )
 
 
-def listing_hash(detail: dict) -> str:
-    # Canonical serialization separates values unambiguously and ignores key order.
-    content = json.dumps([detail.get(key) for key in HASH_FIELDS],
-                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def global_hash(detail: dict, max_photos: int = 3) -> str:
+    # Hash the same ordered selection used for Telegram, plus the limit itself:
+    # changing the limit must invalidate even listings with fewer photos.
+    data = {"fields": [detail.get(key) for key in HASH_FIELDS],
+            "max_photos": max_photos,
+            "photos": [str(url) for url in listing_photos(detail, max_photos)]}
+    content = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def extraction_content(detail: dict) -> str:
     return json.dumps({key: detail.get(key) for key in EXTRACTION_FIELDS},
                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def llm_hash(detail: dict) -> str:
+    """Fingerprint exactly the listing fields supplied to the LLM."""
+    return hashlib.sha256(extraction_content(detail).encode("utf-8")).hexdigest()
 
 
 PROMPT = """Extract rental facts from Czech real estate data.
