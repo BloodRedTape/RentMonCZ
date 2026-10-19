@@ -51,6 +51,8 @@ class SourceListing(Model):
     district_id: int | None
     api_price_kc: float | None
     is_room_category: bool
+    locality_name: str | None = None
+    map_link: HttpUrl | None = None
     distance_to_center_km: float | None = Field(..., ge=0)
     published_at: date | None
     updated_at: date | None

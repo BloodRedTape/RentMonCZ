@@ -35,14 +35,17 @@ def format_message(listing: Listing) -> str:
     link = escape(str(source.link), quote=True)
     availability = rental.available_from
     move_in = "как можно скорее" if availability == "asap" else calendar(availability)
-    distance = ("не указано" if source.distance_to_center_km is None
-                else f"≈{source.distance_to_center_km:.1f} км по прямой")
+    location = escape(source.locality_name or "не указано")
+    if source.map_link is not None:
+        location = f'<a href="{escape(str(source.map_link), quote=True)}">{location}</a>'
+    distance = ("расстояние не указано" if source.distance_to_center_km is None
+                else f"≈{source.distance_to_center_km:.1f} km to center")
     return "\n".join([
         f'🏠 <a href="{link}">{title}</a> — {area}',
         f"💰 Price: {money_pair(payments.rent_kc, payments.utilities_kc)}",
         f"🔐 Commission/Deposit: {money(payments.commission_kc)} + {money(payments.deposit_kc)}",
         f"🔑 Move In: {move_in}",
-        f"📍 Km to Center: {distance}",
+        f"📍 Loc: {location} {distance}",
         f"🕒 Uploaded {calendar(source.published_at)} Updated {calendar(source.updated_at)}",
     ])
 

@@ -108,13 +108,18 @@ def is_room_category(detail: dict) -> bool:
 def source_listing(detail: dict, max_photos: int = 3) -> SourceListing:
     """Boundary adapter: external dictionaries become validated domain data."""
     locality = detail.get("locality") or {}
+    distance = distance_to_center_km(locality)
+    map_link = (f"https://www.google.com/maps/search/?api=1&query="
+                f"{locality['gps_lat']},{locality['gps_lon']}" if distance is not None else None)
     return SourceListing(
         id=str(detail["hash_id"]), title=detail["advert_name"], link=listing_link(detail),
         category_main=(detail.get("category_main_cb") or {}).get("value"),
         category_type=(detail.get("category_type_cb") or {}).get("value"),
         district_id=locality.get("district_id"), api_price_kc=detail.get("price_czk"),
         is_room_category=is_room_category(detail),
-        distance_to_center_km=distance_to_center_km(locality),
+        locality_name=locality.get("citypart") or locality.get("quarter")
+        or locality.get("city") or locality.get("district"),
+        map_link=map_link, distance_to_center_km=distance,
         photos=listing_photos(detail, max_photos), **listing_dates(detail),
     )
 
