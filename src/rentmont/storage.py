@@ -119,19 +119,22 @@ class JsonStore:
         return record
 
     def mark_updated(self, ident: str, global_hash: str, response: dict,
-                     llm_hash: str | None = None) -> None:
+                     llm_hash: str | None = None, *, format_version: int | None = None) -> None:
         record = self.get_notification(ident)
         if record is None or record.status != NotificationStatus.SENT:
             raise StorageError("Cannot update an unsent notification")
         self._write(self._listing_path(ident, "notification.json"),
                     record.model_copy(update={"global_hash": global_hash, "llm_hash": llm_hash,
+                                              "format_version": format_version,
                                               "telegram_response": response}))
 
     def mark_sent(self, ident: str, delivery: TelegramDelivery,
-                  global_hash: str | None = None, llm_hash: str | None = None) -> None:
+                  global_hash: str | None = None, llm_hash: str | None = None,
+                  *, format_version: int | None = None) -> None:
         self._write(self._listing_path(ident, "notification.json"),
                     NotificationRecord(status=NotificationStatus.SENT, sent_at=now(),
                                        global_hash=global_hash, llm_hash=llm_hash,
+                                       format_version=format_version,
                                        chat_id=delivery.chat_id, message_ids=delivery.message_ids,
                                        telegram_method=delivery.method,
                                        telegram_response=delivery.response))

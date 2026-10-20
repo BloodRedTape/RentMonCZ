@@ -11,7 +11,8 @@ from .filters import rental_rejection, source_rejection
 from .models import Listing, ScanStats
 from .sreality import api_json, listing_gone, search, source_listing
 from .storage import JsonStore, StorageError
-from .telegram import TelegramRejected, edit_ad, mark_ad_gone, safe_description, send_ad
+from .telegram import (NOTIFICATION_FORMAT_VERSION, TelegramRejected, edit_ad,
+                       mark_ad_gone, safe_description, send_ad)
 
 LOG = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ def deliver(client: httpx.Client, store: JsonStore, settings: Settings,
             return False
         cached = store.get_extraction(ident)
         store.mark_sent(ident, delivery, cached.global_hash if cached else None,
-                        cached.llm_hash if cached else None)
+                        cached.llm_hash if cached else None,
+                        format_version=NOTIFICATION_FORMAT_VERSION)
         sent += 1
         LOG.info("Notification sent for listing %s (method %s, chat %s, messages %s)",
                  ident, delivery.method, delivery.chat_id, delivery.message_ids)
@@ -68,14 +70,21 @@ def update_changed(client: httpx.Client, store: JsonStore, settings: Settings) -
                 or cached.llm_hash != llm_hash(source.raw)):
             LOG.debug("Listing %s edit deferred: no matching source/extraction", ident)
             continue
-        if record.global_hash == cached.global_hash and record.llm_hash == cached.llm_hash:
+        format_changed = record.format_version != NOTIFICATION_FORMAT_VERSION
+        if (record.global_hash == cached.global_hash and record.llm_hash == cached.llm_hash
+                and not format_changed):
             continue
         try:
-            LOG.info("Updating notification for changed listing %s", ident)
+            if format_changed:
+                LOG.info("Updating notification format for listing %s (version %s -> %s)",
+                         ident, record.format_version, NOTIFICATION_FORMAT_VERSION)
+            else:
+                LOG.info("Updating notification for changed listing %s", ident)
             listing = Listing(source=source_listing(source.raw, settings.telegram_max_photos),
                               rental=cached.details)
             response = edit_ad(client, token, record, listing)
-            store.mark_updated(ident, cached.global_hash, response, cached.llm_hash)
+            store.mark_updated(ident, cached.global_hash, response, cached.llm_hash,
+                               format_version=NOTIFICATION_FORMAT_VERSION)
             LOG.info("Updated changed listing %s (chat %s, message %s)",
                      ident, record.chat_id, record.message_ids[0])
             time.sleep(1.1)

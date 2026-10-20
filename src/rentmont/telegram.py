@@ -11,6 +11,8 @@ from .sreality import photo_download_url
 
 LOG = logging.getLogger(__name__)
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
+# Increment whenever the notification template changes (no LLM refresh needed).
+NOTIFICATION_FORMAT_VERSION = 1
 
 
 def format_message(listing: Listing) -> str:

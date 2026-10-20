@@ -134,6 +134,7 @@ class NotificationRecord(HashedRecord):
     message_ids: tuple[Annotated[int, Field(strict=True, gt=0)], ...] = ()
     telegram_method: Literal["sendMessage", "sendPhoto", "sendMediaGroup"] | None = None
     telegram_response: dict | None = None
+    format_version: int | None = Field(default=None, strict=True, ge=1)
     gone_at: datetime | None = None
     gone_notified: bool = False
 
