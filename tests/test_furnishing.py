@@ -20,16 +20,16 @@ from tests.helpers import api_ad, config, delivery, rental, record
 class FurnishingTests(unittest.TestCase):
     def test_api_codes_and_format(self):
         for code, expected, label in (
-            (1, Furnishing.FURNISHED, "меблированная"),
-            (2, Furnishing.UNFURNISHED, "немеблированная"),
-            (3, Furnishing.PARTIALLY_FURNISHED, "частично меблированная"),
+            (1, Furnishing.FURNISHED, "да"),
+            (2, Furnishing.UNFURNISHED, "нет"),
+            (3, Furnishing.PARTIALLY_FURNISHED, "частично"),
         ):
             for value in (code, str(code)):
                 with self.subTest(value=value):
                     source = source_listing(api_ad() | {"furnished": {"value": value}})
                     self.assertEqual(source.furnishing, expected)
                     listing = record().model_copy(update={"source": source})
-                    self.assertIn(f"🛋 Furnishing: {label}\n", format_message(listing))
+                    self.assertIn(f"🛋 Furnished: {label}\n", format_message(listing))
 
     def test_unspecified_and_invalid_are_not_unfurnished(self):
         for value in (None, 0, "Ne", [], {}, {"value": 0}, {"value": 99},
@@ -37,7 +37,7 @@ class FurnishingTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(listing_furnishing({"furnished": value}))
         self.assertIsNone(listing_furnishing({}))
-        self.assertIn("🛋 Furnishing: не указано", format_message(record()))
+        self.assertIn("🛋 Furnished: не указано", format_message(record()))
 
     def test_llm_fallback_and_api_priority(self):
         for api_code, api_expected in ((0, None), (1, Furnishing.FURNISHED),
@@ -50,10 +50,10 @@ class FurnishingTests(unittest.TestCase):
                     listing = record().model_copy(update={"source": source, "rental": facts})
                     expected = api_expected or inferred
                     self.assertEqual(listing.furnishing, expected)
-                    labels = {None: "не указано", Furnishing.FURNISHED: "меблированная",
-                              Furnishing.PARTIALLY_FURNISHED: "частично меблированная",
-                              Furnishing.UNFURNISHED: "немеблированная"}
-                    self.assertIn(f"🛋 Furnishing: {labels[expected]}\n", format_message(listing))
+                    labels = {None: "не указано", Furnishing.FURNISHED: "да",
+                              Furnishing.PARTIALLY_FURNISHED: "частично",
+                              Furnishing.UNFURNISHED: "нет"}
+                    self.assertIn(f"🛋 Furnished: {labels[expected]}\n", format_message(listing))
                     self.assertEqual(listing.source.furnishing, api_expected)
                     self.assertEqual(listing.rental.furnishing, inferred)
 
@@ -98,7 +98,7 @@ class FurnishingTests(unittest.TestCase):
                 self.assertTrue(deliver(None, store, settings, stats.listings))
                 self.assertTrue(deliver(None, store, settings, stats.listings))
             edit.assert_called_once()
-            self.assertIn("🛋 Furnishing: меблированная", format_message(edit.call_args.args[-1]))
+            self.assertIn("🛋 Furnished: да", format_message(edit.call_args.args[-1]))
 
     def test_separate_hashes(self):
         original = api_ad()
@@ -132,4 +132,4 @@ class FurnishingTests(unittest.TestCase):
                 self.assertTrue(deliver(None, store, settings, stats.listings))
                 self.assertTrue(deliver(None, store, settings, stats.listings))
             edit.assert_called_once()
-            self.assertIn("🛋 Furnishing: частично меблированная", format_message(edit.call_args.args[-1]))
+            self.assertIn("🛋 Furnished: частично", format_message(edit.call_args.args[-1]))

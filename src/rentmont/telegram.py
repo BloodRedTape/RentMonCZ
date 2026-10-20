@@ -35,9 +35,9 @@ def format_message(listing: Listing) -> str:
     link = escape(str(source.link), quote=True)
     availability = rental.available_from
     move_in = "как можно скорее" if availability == "asap" else calendar(availability)
-    furnishing = {Furnishing.FURNISHED: "меблированная",
-                  Furnishing.PARTIALLY_FURNISHED: "частично меблированная",
-                  Furnishing.UNFURNISHED: "немеблированная"}.get(listing.furnishing, "не указано")
+    furnishing = {Furnishing.FURNISHED: "да",
+                  Furnishing.PARTIALLY_FURNISHED: "частично",
+                  Furnishing.UNFURNISHED: "нет"}.get(listing.furnishing, "не указано")
     location = escape(source.locality_name or "не указано")
     if source.map_link is not None:
         location = f'<a href="{escape(str(source.map_link), quote=True)}">{location}</a>'
@@ -48,7 +48,7 @@ def format_message(listing: Listing) -> str:
         f"💰 Price: {money_pair(payments.rent_kc, payments.utilities_kc)}",
         f"🔐 Commission/Deposit: {money(payments.commission_kc)} + {money(payments.deposit_kc)}",
         f"🔑 Move In: {move_in}",
-        f"🛋 Furnishing: {furnishing}",
+        f"🛋 Furnished: {furnishing}",
         f"📍 Loc: {location} {distance}",
         f"🕒 Uploaded {calendar(source.published_at)} Updated {calendar(source.updated_at)}",
     ])
