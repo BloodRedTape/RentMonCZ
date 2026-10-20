@@ -22,12 +22,19 @@ class Payments(Model):
         return None if value == 0 else value
 
 
+class Furnishing(str, Enum):
+    FURNISHED = "furnished"
+    PARTIALLY_FURNISHED = "partially_furnished"
+    UNFURNISHED = "unfurnished"
+
+
 class RentalDetails(Model):
     """Only facts extracted by the LLM; no API metadata or delivery flags."""
     payments: Payments
     is_room_rent: bool = Field(..., strict=True)
     area_m2: float | None = Field(..., gt=0)
     available_from: date | Literal["asap"] | None = Field(...)
+    furnishing: Furnishing | None = None
 
     @field_validator("available_from", mode="before")
     @classmethod
@@ -51,6 +58,7 @@ class SourceListing(Model):
     district_id: int | None
     api_price_kc: float | None
     is_room_category: bool
+    furnishing: Furnishing | None = None
     locality_name: str | None = None
     map_link: HttpUrl | None = None
     distance_to_center_km: float | None = Field(..., ge=0)
@@ -76,6 +84,11 @@ class Listing(Model):
     """Public projection for export and Telegram, without internal state."""
     source: SourceListing
     rental: RentalDetails
+
+    @property
+    def furnishing(self) -> Furnishing | None:
+        """Structured Sreality metadata always takes precedence over LLM facts."""
+        return self.source.furnishing or self.rental.furnishing
 
 
 class SourceRecord(Model):

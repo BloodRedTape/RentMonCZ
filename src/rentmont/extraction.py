@@ -19,7 +19,7 @@ EXTRACTION_FIELDS = (
 HASH_FIELDS = (
     "advert_name", "advert_description", "price_czk", "price_unit_cb",
     "price_currency_cb", "price_note", "cost_of_living", "commission",
-    "refundable_deposit", "since", "edited",
+    "refundable_deposit", "since", "edited", "furnished",
 )
 
 
@@ -35,9 +35,15 @@ def extraction_content(detail: dict) -> str:
                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+# Bump when changing the extraction contract so old successful facts are refreshed.
+EXTRACTION_VERSION = 2
+
+
 def llm_hash(detail: dict) -> str:
-    """Fingerprint exactly the listing fields supplied to the LLM."""
-    return hashlib.sha256(extraction_content(detail).encode("utf-8")).hexdigest()
+    """Fingerprint the extraction contract and listing fields supplied to the LLM."""
+    content = json.dumps({"version": EXTRACTION_VERSION, "input": extraction_content(detail)},
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 PROMPT = """Extract rental facts from Czech real estate data.
@@ -48,6 +54,15 @@ payments.rent_kc: monthly base rent, excluding utilities.
 payments.utilities_kc: total explicitly stated monthly utilities/service advances.
 payments.commission_kc: one-time agency commission payable by tenant.
 payments.deposit_kc: refundable security deposit (kauce/jistota).
+furnishing: infer only from explicit statements about furniture in the title or
+advert_description. Return "furnished" for furnished (vybaveny, zarizeny),
+"partially_furnished" for explicitly partially furnished (castecne vybaveny or
+zarizeny), "unfurnished" for explicitly unfurnished (nevybaveny, nezarizeny, bez
+nabytku), or null when missing, ambiguous, optional or contradictory. Respect
+negation and partial qualifiers. Appliances, a fitted kitchen, bathroom fittings
+or a single wardrobe alone do not establish that the flat is furnished or
+partially furnished. Do not infer furnishing from photos, price, or the absence
+of furniture mentions. Do not treat the absence of a statement as unfurnished.
 is_room_rent: true only when the category, title or description explicitly says
 that ONLY a room or a bed/shared room is offered (pokoj, pronajem pokoje,
 spolubydleni). A flat having rooms (e.g. 2+kk, two bedrooms) is not room rental.

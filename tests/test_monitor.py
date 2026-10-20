@@ -185,7 +185,7 @@ class TelegramTests(unittest.TestCase):
         text = format_message(listing)
         self.assertIn("Flat &lt;nice&gt; &amp; bright", text)
         self.assertIn("12,000 Kč + 2,000 Kč = 14,000 Kč", text)
-        self.assertEqual(len(text.splitlines()), 6)
+        self.assertEqual(len(text.splitlines()), 7)
         for value, expected in ((None, "не указано"), ("asap", "как можно скорее"), (date(2026, 12, 1), "01.12.2026")):
             self.assertIn(expected, format_message(listing.model_copy(update={"rental": rental().model_copy(update={"available_from": value})})))
 

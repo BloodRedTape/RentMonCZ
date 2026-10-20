@@ -7,7 +7,7 @@ import httpx
 from pydantic import HttpUrl, ValidationError
 
 from .location import distance_to_center_km
-from .models import SourceListing
+from .models import Furnishing, SourceListing
 
 LOG = logging.getLogger(__name__)
 API = "https://www.sreality.cz/api/v1"
@@ -105,6 +105,19 @@ def is_room_category(detail: dict) -> bool:
     return str(category.get("name", "")).strip().casefold() in {"pokoj", "pokoje"}
 
 
+def listing_furnishing(detail: dict) -> Furnishing | None:
+    """Sreality's structured furnishing code; 0 means unspecified, not unfurnished."""
+    furnished = detail.get("furnished")
+    if not isinstance(furnished, dict):
+        return None
+    value = furnished.get("value")
+    if type(value) not in (int, str):
+        return None
+    return {"1": Furnishing.FURNISHED,
+            "2": Furnishing.UNFURNISHED,
+            "3": Furnishing.PARTIALLY_FURNISHED}.get(str(value))
+
+
 def source_listing(detail: dict, max_photos: int = 3) -> SourceListing:
     """Boundary adapter: external dictionaries become validated domain data."""
     locality = detail.get("locality") or {}
@@ -116,7 +129,7 @@ def source_listing(detail: dict, max_photos: int = 3) -> SourceListing:
         category_main=(detail.get("category_main_cb") or {}).get("value"),
         category_type=(detail.get("category_type_cb") or {}).get("value"),
         district_id=locality.get("district_id"), api_price_kc=detail.get("price_czk"),
-        is_room_category=is_room_category(detail),
+        is_room_category=is_room_category(detail), furnishing=listing_furnishing(detail),
         locality_name=locality.get("citypart") or locality.get("quarter")
         or locality.get("city") or locality.get("district"),
         map_link=map_link, distance_to_center_km=distance,
