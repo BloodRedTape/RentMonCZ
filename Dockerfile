@@ -1,15 +1,15 @@
-FROM python:3.12-slim
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+COPY service/go.mod service/go.sum ./
+RUN go mod download
+COPY service/cmd ./cmd
+COPY service/internal ./internal
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/rentmont ./cmd/rentmont \
+    && mkdir -p /out/data
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    DATA_DIR=/app/data
-
+FROM gcr.io/distroless/static-debian12
 WORKDIR /app
-
-COPY pyproject.toml README.md ./
-COPY src/rentmont ./src/rentmont
-RUN pip install --no-cache-dir . \
-    && mkdir -p /app/data
-
-ENTRYPOINT ["python", "-m", "rentmont"]
+ENV DATA_DIR=/app/data
+COPY --from=build /out/rentmont /usr/local/bin/rentmont
+COPY --from=build /out/data /app/data
+ENTRYPOINT ["/usr/local/bin/rentmont"]

@@ -1,0 +1,6 @@
+{"hash_id": 123, "advert_name": "Byt 2+kk \"Černá Pole\" <b>&</b> \t\u0001", "advert_description": "Popis\nřádek\u007f 😀",
+ "price_czk": 12000.0, "price_note": {"z": 1, "a": [1.5, 1e16, 1.5e-5, 0.0001, 123456789012345678901234567890, -0.0, 2.50]},
+ "cost_of_living": "3 000 Kč", "commission": null, "refundable_deposit": 24000, "since": "2026-10-01", "edited": "2026-10-14",
+ "furnished": {"name": "Ano", "value": 1}, "usable_area": 45.10, "floor_area": 1E3, "ready_date": "2026-12-01",
+ "tenant_not_pay_commission": true, "price_unit_cb": {"name": "za měsíc", "value": 2}, "price_currency_cb": {"value": 1},
+ "category_sub_cb": {"name": "2+kk", "value": 4}}

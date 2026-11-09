@@ -8,3 +8,6 @@ build/
 dist/
 .pytest_cache/
 .ruff_cache/
+/rentmont
+/rentmont.exe
+tmp/
