@@ -286,7 +286,7 @@ func (s *Service) Deliver(ctx context.Context, listings []domain.Listing) (bool,
 		sent++
 		logger().Info("Notification sent", "listing", ident, "method", delivery.Method,
 			"chat", delivery.ChatID, "messages", delivery.MessageIDs)
-		s.Sleep(ctx, 1100*time.Millisecond)
+		s.Sleep(ctx, messageInterval)
 	}
 	updated := goneOK && changedOK
 	logger().Info("Delivery complete", "sent", sent, "updates_ok", updated,
@@ -323,7 +323,7 @@ func (s *Service) updateChanged(ctx context.Context) (bool, error) {
 			continue
 		}
 		if formatChanged {
-			logger().Info("Updating notification format", "listing", ident, "from", record.FormatVersion, "to", s.FormatVersion)
+			logger().Info("Updating notification format", "listing", ident, "from", formatVersion(record.FormatVersion), "to", s.FormatVersion)
 		} else {
 			logger().Info("Updating notification for changed listing", "listing", ident)
 		}
@@ -333,6 +333,9 @@ func (s *Service) updateChanged(ctx context.Context) (bool, error) {
 			}
 			succeeded = false
 			logger().Warn("Listing update failed; will retry", "listing", ident, "error", s.describe(err))
+			if !s.waitRateLimit(ctx, err) {
+				return false, nil
+			}
 		}
 	}
 	return succeeded, nil
@@ -352,7 +355,7 @@ func (s *Service) edit(ctx context.Context, ident string, record domain.Notifica
 		return err
 	}
 	logger().Info("Updated changed listing", "listing", ident, "chat", *record.ChatID, "message", record.MessageIDs[0])
-	s.Sleep(ctx, 1100*time.Millisecond)
+	s.Sleep(ctx, messageInterval)
 	return nil
 }
 
@@ -372,6 +375,9 @@ func (s *Service) updateGone(ctx context.Context) (bool, error) {
 			}
 			succeeded = false
 			logger().Warn("Gone check/update failed; will retry", "listing", item.ID, "error", s.describe(err))
+			if !s.waitRateLimit(ctx, err) {
+				return false, nil
+			}
 		}
 	}
 	return succeeded, nil
@@ -405,10 +411,38 @@ func (s *Service) gone(ctx context.Context, ident string, record domain.Notifica
 		return err
 	}
 	logger().Info("Gone notification updated", "listing", ident, "chat", *record.ChatID, "message", record.MessageIDs[0])
-	s.Sleep(ctx, 1100*time.Millisecond)
+	s.Sleep(ctx, messageInterval)
 	return nil
 }
 
+const (
+	messageInterval  = 3 * time.Second
+	maxRateLimitWait = time.Minute
+)
+
+// waitRateLimit pauses after a Telegram 429 and reports whether further requests may follow in this cycle.
+func (s *Service) waitRateLimit(ctx context.Context, err error) bool {
+	var limited *telegram.RateLimited
+	if !errors.As(err, &limited) {
+		return true
+	}
+	wait := max(limited.RetryAfter, messageInterval)
+	if wait > maxRateLimitWait {
+		logger().Warn("Telegram rate limit too long; postponing updates to the next cycle", "retry_after", wait)
+		return false
+	}
+	logger().Info("Telegram rate limit; waiting", "retry_after", wait)
+	s.Sleep(ctx, wait)
+	return ctx.Err() == nil
+}
+
 func equal(value *string, expected string) bool { return value != nil && *value == expected }
+
+func formatVersion(v *int64) any {
+	if v == nil {
+		return "none"
+	}
+	return *v
+}
 
 func same(a, b *string) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }

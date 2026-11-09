@@ -233,3 +233,15 @@ func TestMarkGoneKeepsEntitiesAndBody(t *testing.T) {
 		}
 	}
 }
+
+func TestRateLimitedRetryAfter(t *testing.T) {
+	client := New(testutil.Client(func(*http.Request) *http.Response {
+		return testutil.Respond(429, `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 17","parameters":{"retry_after":17}}`)
+	}), "secret")
+	_, err := client.call(context.Background(), "editMessageText", map[string]any{}, nil)
+	var limited *RateLimited
+	var status *netutil.StatusError
+	if !errors.As(err, &limited) || limited.RetryAfter != 17*time.Second || !errors.As(err, &status) || status.Code != 429 {
+		t.Errorf("unexpected error %v", err)
+	}
+}

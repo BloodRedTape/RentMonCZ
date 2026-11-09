@@ -48,6 +48,26 @@ type Rejected struct {
 
 func (e *Rejected) Error() string { return "Telegram rejected message" }
 
+type RateLimited struct {
+	RetryAfter time.Duration
+}
+
+func (e *RateLimited) Error() string {
+	return fmt.Sprintf("Telegram rate limit; retry after %s", e.RetryAfter)
+}
+
+func (e *RateLimited) Unwrap() error { return &netutil.StatusError{Code: http.StatusTooManyRequests} }
+
+func retryAfter(body []byte) time.Duration {
+	result, _ := jsonval.DecodeObject(body)
+	parameters, _ := result["parameters"].(map[string]any)
+	seconds, ok := jsonval.Int(parameters["retry_after"])
+	if !ok || seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func isNotModified(err error) bool {
 	var rejected *Rejected
 	return errors.As(err, &rejected) && rejected.Code == 400 &&
@@ -143,6 +163,9 @@ func (c *Client) call(ctx context.Context, method string, payload map[string]any
 	if resp.StatusCode == 400 {
 		result, _ := jsonval.DecodeObject(resp.Body)
 		return nil, &Rejected{Code: 400, Description: description(result)}
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, &RateLimited{RetryAfter: retryAfter(resp.Body)}
 	}
 	if err := resp.CheckStatus(); err != nil {
 		return nil, err

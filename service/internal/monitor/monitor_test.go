@@ -476,6 +476,41 @@ func TestPhotoChangesDoNotEdit(t *testing.T) {
 	}
 }
 
+func TestRateLimitedEditsWaitOrStop(t *testing.T) {
+	for _, c := range []struct {
+		retryAfter time.Duration
+		edits      int
+		waits      []time.Duration
+	}{
+		{5 * time.Second, 2, []time.Duration{5 * time.Second, 5 * time.Second}},
+		{0, 2, []time.Duration{messageInterval, messageInterval}},
+		{2 * time.Hour, 1, nil},
+	} {
+		h := newHarness(t, true)
+		h.source.ads = []map[string]any{testutil.APIAd(t, 123), testutil.APIAd(t, 456)}
+		stats, err := h.service.Scan(context.Background(), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.deliver(stats.Listings)
+		h.service.FormatVersion++
+		h.notifier.editErr = &telegram.RateLimited{RetryAfter: c.retryAfter}
+		var waits []time.Duration
+		h.service.Sleep = func(_ context.Context, d time.Duration) {
+			if d != messageInterval || h.notifier.editErr != nil {
+				waits = append(waits, d)
+			}
+		}
+		edits := h.notifier.edits
+		if h.deliver(nil) {
+			t.Error("rate-limited edits reported as success")
+		}
+		if h.notifier.edits-edits != c.edits || !reflect.DeepEqual(waits, c.waits) {
+			t.Errorf("retry_after=%s: edits=%d waits=%v", c.retryAfter, h.notifier.edits-edits, waits)
+		}
+	}
+}
+
 func TestFormatVersionEditsOnceAndRetries(t *testing.T) {
 	h := newHarness(t, true)
 	stats := h.scan(nil, false)
