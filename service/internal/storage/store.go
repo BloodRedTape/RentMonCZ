@@ -179,6 +179,18 @@ func (s *Store) UpdateExtractionGlobalHash(ident, globalHash string) error {
 	return s.writeListing(ident, "extraction.json", record)
 }
 
+func (s *Store) UpdateExtractionPhotoFacts(ident string, facts domain.PhotoFacts) error {
+	record, err := s.GetExtraction(ident)
+	if err != nil {
+		return err
+	}
+	if record == nil {
+		return fail(nil, "Cannot attach photo facts to a missing extraction")
+	}
+	record.Details.PhotoFacts = &facts
+	return s.writeListing(ident, "extraction.json", record)
+}
+
 func (s *Store) GetNotification(ident string) (*domain.NotificationRecord, error) {
 	var record domain.NotificationRecord
 	_, found, err := s.readListing(ident, "notification.json", &record)

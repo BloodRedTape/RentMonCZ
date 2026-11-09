@@ -118,6 +118,24 @@ func (a *Amenities) Validate() error {
 	return nil
 }
 
+type PhotoFacts struct {
+	PhotosHash    string `json:"photos_hash"`
+	WasherVisible bool   `json:"washer_visible"`
+}
+
+func (p *PhotoFacts) UnmarshalJSON(data []byte) error {
+	type plain PhotoFacts
+	var v plain
+	if err := strictDecode(data, &v, "photos_hash!", "washer_visible!"); err != nil {
+		return err
+	}
+	if v.PhotosHash == "" {
+		return errors.New("photo_facts.photos_hash: must not be empty")
+	}
+	*p = PhotoFacts(v)
+	return nil
+}
+
 const ASAP = "asap"
 
 type Payments struct {
@@ -163,6 +181,7 @@ type RentalDetails struct {
 	AvailableFrom *string     `json:"available_from"`
 	Furnishing    *Furnishing `json:"furnishing"`
 	Amenities     Amenities   `json:"amenities"`
+	PhotoFacts    *PhotoFacts `json:"photo_facts"`
 }
 
 func (r *RentalDetails) UnmarshalJSON(data []byte) error {
@@ -255,8 +274,16 @@ func (l Listing) Furnishing() *Furnishing {
 	return l.Rental.Furnishing
 }
 
+func (l Listing) WasherFromPhotos() bool {
+	return l.Rental.Amenities.Washer == nil && l.Rental.PhotoFacts != nil && l.Rental.PhotoFacts.WasherVisible
+}
+
 func (l Listing) Amenities() Amenities {
 	result := l.Rental.Amenities
+	if l.WasherFromPhotos() {
+		washer := WasherInFlat
+		result.Washer = &washer
+	}
 	if l.Source.Cellar != nil {
 		result.Storage = result.Storage.WithCellar()
 	}
@@ -460,6 +487,7 @@ func (s *MonitorState) Validate() error {
 type ScanStats struct {
 	SearchResults int
 	LLMCalls      int
+	VisionCalls   int
 	CacheHits     int
 	Excluded      int
 	Errors        int

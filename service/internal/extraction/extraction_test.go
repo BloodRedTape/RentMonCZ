@@ -112,3 +112,30 @@ func TestExtractRejectsInvalidOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestWasherVisibleRequest(t *testing.T) {
+	var payload map[string]any
+	client := NewClient(testutil.Client(func(req *http.Request) *http.Response {
+		body, _ := io.ReadAll(req.Body)
+		_ = json.Unmarshal(body, &payload)
+		return testutil.Respond(200, `{"choices":[{"finish_reason":"stop","message":{"content":"{\"washer_visible\":true}"}}]}`)
+	}), "key", "model", "https://api.openai.test/v1")
+	visible, err := client.WasherVisible(context.Background(), []string{"https://e.cz/a.jpg", "https://e.cz/b.jpg"})
+	if err != nil || !visible {
+		t.Fatalf("visible=%v err=%v", visible, err)
+	}
+	parts := payload["messages"].([]any)[1].(map[string]any)["content"].([]any)
+	if len(parts) != 3 {
+		t.Fatalf("expected text and two images, got %v", parts)
+	}
+	image := parts[1].(map[string]any)["image_url"].(map[string]any)
+	if image["url"] != "https://e.cz/a.jpg" || image["detail"] != "low" {
+		t.Errorf("unexpected image part %v", image)
+	}
+	if PhotosHash([]string{"a"}) == PhotosHash([]string{"b"}) || PhotosHash([]string{"a"}) != PhotosHash([]string{"a"}) {
+		t.Error("photos hash must depend on photos only")
+	}
+	if _, err := client.WasherVisible(context.Background(), nil); err == nil {
+		t.Error("empty photo list accepted")
+	}
+}

@@ -23,6 +23,7 @@ type Settings struct {
 	DistrictID            int
 	DataDir               string
 	NotifyExisting        bool
+	VisionEnabled         bool
 }
 
 func Default() Settings {
@@ -34,6 +35,7 @@ func Default() Settings {
 		MaxRentKc:         13500,
 		DistrictID:        72,
 		DataDir:           "data",
+		VisionEnabled:     true,
 	}
 }
 
@@ -70,6 +72,7 @@ func FromLookup(lookup func(string) (string, bool)) (Settings, error) {
 		}
 	}
 	p.boolean("NOTIFY_EXISTING", &s.NotifyExisting)
+	p.boolean("VISION_ENABLED", &s.VisionEnabled)
 	if len(p.invalid) > 0 {
 		return Settings{}, &ValidationError{Fields: p.invalid}
 	}

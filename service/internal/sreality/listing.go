@@ -155,23 +155,8 @@ func ListingPhotos(detail map[string]any, maxPhotos int) ([]string, error) {
 	}
 	seen := map[string]bool{}
 	for _, image := range images {
-		value := image
-		if m, ok := image.(map[string]any); ok {
-			value = m["url"]
-		}
-		raw, ok := value.(string)
-		if !ok {
-			continue
-		}
-		if strings.HasPrefix(raw, "//") {
-			raw = "https:" + raw
-		}
-		normalized, ok := normalizeURL(raw)
-		if !ok {
-			continue
-		}
-		normalized = PhotoDownloadURL(normalized)
-		if seen[normalized] {
+		normalized, ok := imageURL(image)
+		if !ok || seen[normalized] {
 			continue
 		}
 		seen[normalized] = true
@@ -181,6 +166,53 @@ func ListingPhotos(detail map[string]any, maxPhotos int) ([]string, error) {
 		}
 	}
 	return photos, nil
+}
+
+const floorPlanKind = 4
+
+// VisionPhotos returns real photos for image inspection, skipping floor plans and AI-edited images.
+func VisionPhotos(detail map[string]any) []string {
+	photos := []string{}
+	images, _ := detail["advert_images"].([]any)
+	seen := map[string]bool{}
+	for _, image := range images {
+		m, ok := image.(map[string]any)
+		if !ok {
+			continue
+		}
+		if kind, ok := jsonval.Int(m["kind"]); ok && kind == floorPlanKind {
+			continue
+		}
+		if edited, _ := m["ai_edited"].(bool); edited {
+			continue
+		}
+		normalized, ok := imageURL(m)
+		if !ok || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		photos = append(photos, normalized)
+	}
+	return photos
+}
+
+func imageURL(image any) (string, bool) {
+	value := image
+	if m, ok := image.(map[string]any); ok {
+		value = m["url"]
+	}
+	raw, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	if strings.HasPrefix(raw, "//") {
+		raw = "https:" + raw
+	}
+	normalized, ok := normalizeURL(raw)
+	if !ok {
+		return "", false
+	}
+	return PhotoDownloadURL(normalized), true
 }
 
 func normalizeURL(raw string) (string, bool) {

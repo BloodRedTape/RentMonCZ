@@ -11,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"rentmont/internal/domain"
 	"rentmont/internal/extraction"
+	"rentmont/internal/netutil"
 	"rentmont/internal/pyjson"
 	"rentmont/internal/sreality"
 	"rentmont/internal/storage"
@@ -46,14 +48,24 @@ func (f *fakeSource) Detail(_ context.Context, ident string) (map[string]any, er
 func (f *fakeSource) ListingGone(context.Context, string) (bool, error) { return false, nil }
 
 type fakeExtractor struct {
-	facts domain.RentalDetails
-	err   error
-	calls int
+	facts        domain.RentalDetails
+	err          error
+	calls        int
+	washer       bool
+	visionErr    error
+	visionCalls  int
+	visionPhotos []string
 }
 
 func (f *fakeExtractor) Extract(context.Context, map[string]any) (domain.RentalDetails, error) {
 	f.calls++
 	return f.facts, f.err
+}
+
+func (f *fakeExtractor) WasherVisible(_ context.Context, photos []string) (bool, error) {
+	f.visionCalls++
+	f.visionPhotos = photos
+	return f.washer, f.visionErr
 }
 
 type fakeNotifier struct {
@@ -156,6 +168,91 @@ func TestRejectedFactsSurviveRestart(t *testing.T) {
 		if !reflect.DeepEqual(saved.Details, facts) {
 			t.Errorf("facts not preserved: %+v", saved.Details)
 		}
+	}
+}
+
+func withPhotos(t *testing.T, images ...map[string]any) map[string]any {
+	list := make([]any, len(images))
+	for i, image := range images {
+		list[i] = image
+	}
+	return testutil.With(t, testutil.APIAd(t, 123), map[string]any{"advert_images": list})
+}
+
+func photo(url string, kind int, aiEdited bool) map[string]any {
+	return map[string]any{"url": url, "kind": json.Number(strconv.Itoa(kind)), "ai_edited": aiEdited}
+}
+
+func TestPhotoCheckForUnknownWasher(t *testing.T) {
+	h := newHarness(t, true)
+	h.extractor.washer = true
+	detail := withPhotos(t, photo("//e.cz/a.jpg", 2, false), photo("//e.cz/plan.jpg", 4, false), photo("//e.cz/ai.jpg", 2, true))
+	stats := h.scan(detail, false)
+	if h.extractor.visionCalls != 1 || stats.VisionCalls != 1 || len(h.extractor.visionPhotos) != 1 ||
+		!strings.HasPrefix(h.extractor.visionPhotos[0], "https://e.cz/a.jpg") {
+		t.Fatalf("calls=%d photos=%v", h.extractor.visionCalls, h.extractor.visionPhotos)
+	}
+	if !stats.Listings[0].WasherFromPhotos() || !strings.Contains(telegram.FormatMessage(stats.Listings[0]), "🧺 Washer: есть (фото)") {
+		t.Error("washer from photos not shown")
+	}
+	h.restart()
+	h.scan(detail, false)
+	if h.extractor.visionCalls != 1 {
+		t.Error("photo check must be cached")
+	}
+	textChanged := testutil.With(t, detail, map[string]any{"advert_description": "changed"})
+	h.scan(textChanged, false)
+	if h.extractor.visionCalls != 1 {
+		t.Error("photo facts must survive text re-extraction when photos are unchanged")
+	}
+	h.scan(withPhotos(t, photo("//e.cz/b.jpg", 2, false)), false)
+	if h.extractor.visionCalls != 2 {
+		t.Error("changed photos must be checked again")
+	}
+}
+
+func TestPhotoCheckSkipped(t *testing.T) {
+	known := testutil.Rental()
+	washer := domain.WasherNone
+	known.Amenities.Washer = &washer
+	for name, setup := range map[string]func(h *harness) map[string]any{
+		"washer known": func(h *harness) map[string]any {
+			h.extractor.facts = known
+			return withPhotos(t, photo("//e.cz/a.jpg", 2, false))
+		},
+		"disabled": func(h *harness) map[string]any {
+			h.service.Settings.VisionEnabled = false
+			return withPhotos(t, photo("//e.cz/a.jpg", 2, false))
+		},
+		"only plans": func(h *harness) map[string]any { return withPhotos(t, photo("//e.cz/p.jpg", 4, false)) },
+		"rejected": func(h *harness) map[string]any {
+			h.extractor.facts = rental(testutil.F(20000), nil, false)
+			return withPhotos(t, photo("//e.cz/a.jpg", 2, false))
+		},
+	} {
+		h := newHarness(t, true)
+		h.scan(setup(h), false)
+		if h.extractor.visionCalls != 0 {
+			t.Errorf("%s: photos must not be checked", name)
+		}
+	}
+}
+
+func TestPhotoCheckErrors(t *testing.T) {
+	h := newHarness(t, true)
+	h.extractor.visionErr = errors.New("timeout")
+	detail := withPhotos(t, photo("//e.cz/a.jpg", 2, false))
+	if stats := h.scan(detail, false); stats.Errors != 1 || len(stats.Listings) != 0 {
+		t.Errorf("transient error must retry the listing: %+v", stats)
+	}
+	h.extractor.visionErr = &netutil.StatusError{Code: 400}
+	stats := h.scan(detail, false)
+	if stats.Errors != 0 || len(stats.Listings) != 1 || stats.Listings[0].WasherFromPhotos() {
+		t.Errorf("rejected photos must leave the washer unknown: %+v", stats)
+	}
+	h.scan(detail, false)
+	if h.extractor.visionCalls != 2 {
+		t.Error("rejected photos must not be retried")
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 )
 
 // FormatVersion must be bumped whenever the template changes; sent messages are then re-edited.
-const FormatVersion = 2
+const FormatVersion = 3
 
 const notSpecified = "не указано"
 
@@ -49,7 +49,7 @@ func FormatMessage(listing domain.Listing) string {
 		fmt.Sprintf("🔐 Commission/Deposit: %s + %s", money(payments.CommissionKc), money(payments.DepositKc)),
 		"🔑 Move In: " + moveIn,
 		"🛋 Furnished: " + furnishingLabel(listing.Furnishing()),
-		fmt.Sprintf("🧺 Washer: %s · 📦 Storage: %s", washerLabel(amenities.Washer), storageLabel(amenities.Storage)),
+		fmt.Sprintf("🧺 Washer: %s · 📦 Storage: %s", washerLabel(amenities.Washer, listing.WasherFromPhotos()), storageLabel(amenities.Storage)),
 		fmt.Sprintf("📍 Loc: %s %s", location, distance),
 		fmt.Sprintf("🕒 Uploaded %s Updated %s", calendar(source.PublishedAt), calendar(source.UpdatedAt)),
 	}, "\n")
@@ -70,9 +70,12 @@ func furnishingLabel(f *domain.Furnishing) string {
 	return notSpecified
 }
 
-func washerLabel(w *domain.Washer) string {
+func washerLabel(w *domain.Washer, fromPhotos bool) string {
 	if w == nil {
 		return notSpecified
+	}
+	if fromPhotos {
+		return "есть (фото)"
 	}
 	switch *w {
 	case domain.WasherInFlat:

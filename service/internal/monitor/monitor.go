@@ -28,6 +28,7 @@ type Source interface {
 
 type Extractor interface {
 	Extract(ctx context.Context, detail map[string]any) (domain.RentalDetails, error)
+	WasherVisible(ctx context.Context, photos []string) (bool, error)
 }
 
 type Notifier interface {
@@ -108,7 +109,7 @@ func (s *Service) Scan(ctx context.Context, reextract bool) (domain.ScanStats, e
 		}
 	}
 	logger().Info("Scan complete", "results", stats.SearchResults, "eligible", len(stats.Listings),
-		"llm_calls", stats.LLMCalls, "cache_hits", stats.CacheHits, "excluded", stats.Excluded,
+		"llm_calls", stats.LLMCalls, "vision_calls", stats.VisionCalls, "cache_hits", stats.CacheHits, "excluded", stats.Excluded,
 		"errors", stats.Errors, "elapsed", time.Since(started).Round(100*time.Millisecond))
 	return stats, nil
 }
@@ -173,6 +174,9 @@ func (s *Service) scanListing(ctx context.Context, ident string, initial, reextr
 		if rental, err = s.Extractor.Extract(ctx, detail); err != nil {
 			return nil, err
 		}
+		if cached != nil {
+			rental.PhotoFacts = cached.Details.PhotoFacts
+		}
 		if err := s.Store.SaveExtraction(ident, rental, &currentHash, &inputHash); err != nil {
 			return nil, err
 		}
@@ -182,6 +186,9 @@ func (s *Service) scanListing(ctx context.Context, ident string, initial, reextr
 		logger().Debug("Listing excluded by rental filter", "listing", ident, "reason", reason)
 		stats.Excluded++
 		return nil, nil
+	}
+	if err := s.inspectPhotos(ctx, ident, detail, &rental, stats); err != nil {
+		return nil, err
 	}
 	logger().Debug("Listing eligible", "listing", ident)
 	if initial && !s.Settings.NotifyExisting {
@@ -197,6 +204,41 @@ func (s *Service) scanListing(ctx context.Context, ident string, initial, reextr
 		}
 	}
 	return &domain.Listing{Source: source, Rental: rental}, nil
+}
+
+// inspectPhotos looks for a washer in photos only when the text left it unknown.
+func (s *Service) inspectPhotos(ctx context.Context, ident string, detail map[string]any,
+	rental *domain.RentalDetails, stats *domain.ScanStats) error {
+	if !s.Settings.VisionEnabled || rental.Amenities.Washer != nil {
+		return nil
+	}
+	photos := sreality.VisionPhotos(detail)
+	if len(photos) == 0 {
+		logger().Debug("Photo check skipped: no eligible photos", "listing", ident)
+		return nil
+	}
+	hash := extraction.PhotosHash(photos)
+	if rental.PhotoFacts != nil && rental.PhotoFacts.PhotosHash == hash {
+		logger().Debug("Photo check cache hit", "listing", ident)
+		return nil
+	}
+	stats.VisionCalls++
+	logger().Info("Checking photos for a washer", "listing", ident, "photos", len(photos))
+	visible, err := s.Extractor.WasherVisible(ctx, photos)
+	if err != nil {
+		var status *netutil.StatusError
+		if !errors.As(err, &status) || status.Code != 400 {
+			return err
+		}
+		logger().Warn("OpenAI rejected the photos; washer stays unknown", "listing", ident)
+	}
+	facts := domain.PhotoFacts{PhotosHash: hash, WasherVisible: visible}
+	if err := s.Store.UpdateExtractionPhotoFacts(ident, facts); err != nil {
+		return err
+	}
+	rental.PhotoFacts = &facts
+	logger().Info("Photo check complete", "listing", ident, "washer_visible", visible)
+	return nil
 }
 
 func (s *Service) Deliver(ctx context.Context, listings []domain.Listing) (bool, error) {

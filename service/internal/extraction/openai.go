@@ -41,52 +41,60 @@ type completion struct {
 }
 
 func (c *Client) Extract(ctx context.Context, detail map[string]any) (domain.RentalDetails, error) {
-	body, err := json.Marshal(map[string]any{
-		"model": c.Model,
-		"messages": []map[string]string{
-			{"role": "system", "content": Prompt},
-			{"role": "user", "content": Content(detail)},
-		},
-		"response_format": map[string]any{
-			"type": "json_schema",
-			"json_schema": map[string]any{
-				"name": "RentalDetails", "strict": true, "schema": json.RawMessage(schema),
-			},
-		},
-	})
+	content, err := c.complete(ctx, []map[string]any{
+		{"role": "system", "content": Prompt},
+		{"role": "user", "content": Content(detail)},
+	}, "RentalDetails", schema)
 	if err != nil {
 		return domain.RentalDetails{}, err
-	}
-	resp, err := c.post(ctx, body)
-	if err != nil {
-		return domain.RentalDetails{}, err
-	}
-	var result completion
-	if err := json.Unmarshal(resp.Body, &result); err != nil {
-		return domain.RentalDetails{}, errors.New("OpenAI returned an invalid response")
-	}
-	if len(result.Choices) == 0 {
-		return domain.RentalDetails{}, errors.New("OpenAI returned no choices")
-	}
-	choice := result.Choices[0]
-	switch {
-	case choice.FinishReason == "length":
-		return domain.RentalDetails{}, errors.New("OpenAI response was truncated")
-	case choice.FinishReason == "content_filter":
-		return domain.RentalDetails{}, errors.New("OpenAI response was filtered")
-	case choice.Message.Refusal != nil && *choice.Message.Refusal != "":
-		return domain.RentalDetails{}, errors.New("OpenAI refused the request")
-	case choice.Message.Content == nil:
-		return domain.RentalDetails{}, errors.New("OpenAI did not return parsed rental details")
 	}
 	var details domain.RentalDetails
-	if err := json.Unmarshal([]byte(*choice.Message.Content), &details); err != nil {
+	if err := json.Unmarshal([]byte(content), &details); err != nil {
 		return domain.RentalDetails{}, errors.New("OpenAI returned invalid rental details: " + err.Error())
 	}
 	if sreality.IsRoomCategory(detail) {
 		details.IsRoomRent = true
 	}
 	return details, nil
+}
+
+func (c *Client) complete(ctx context.Context, messages []map[string]any, name, responseSchema string) (string, error) {
+	body, err := json.Marshal(map[string]any{
+		"model":    c.Model,
+		"messages": messages,
+		"response_format": map[string]any{
+			"type": "json_schema",
+			"json_schema": map[string]any{
+				"name": name, "strict": true, "schema": json.RawMessage(responseSchema),
+			},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.post(ctx, body)
+	if err != nil {
+		return "", err
+	}
+	var result completion
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
+		return "", errors.New("OpenAI returned an invalid response")
+	}
+	if len(result.Choices) == 0 {
+		return "", errors.New("OpenAI returned no choices")
+	}
+	choice := result.Choices[0]
+	switch {
+	case choice.FinishReason == "length":
+		return "", errors.New("OpenAI response was truncated")
+	case choice.FinishReason == "content_filter":
+		return "", errors.New("OpenAI response was filtered")
+	case choice.Message.Refusal != nil && *choice.Message.Refusal != "":
+		return "", errors.New("OpenAI refused the request")
+	case choice.Message.Content == nil:
+		return "", errors.New("OpenAI did not return parsed content")
+	}
+	return *choice.Message.Content, nil
 }
 
 func (c *Client) post(ctx context.Context, body []byte) (*netutil.Response, error) {
