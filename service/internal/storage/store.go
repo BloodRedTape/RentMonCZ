@@ -267,6 +267,36 @@ func (s *Store) MarkSent(ident string, delivery domain.TelegramDelivery, globalH
 	})
 }
 
+func (s *Store) BeginAttempt(ident string) (int64, error) {
+	record, err := s.GetNotification(ident)
+	if err != nil {
+		return 0, err
+	}
+	attempts := int64(1)
+	if record != nil {
+		if record.Status != domain.Pending {
+			return 0, fail(nil, "Cannot send a notification that is already %s", record.Status)
+		}
+		attempts = record.Attempts + 1
+	}
+	now := Now()
+	return attempts, s.writeListing(ident, "notification.json", &domain.NotificationRecord{
+		Status: domain.Pending, Attempts: attempts, AttemptedAt: &now,
+	})
+}
+
+func (s *Store) RecordFailure(ident, reason string) error {
+	record, err := s.GetNotification(ident)
+	if err != nil {
+		return err
+	}
+	if record == nil || record.Status != domain.Pending {
+		return fail(nil, "Cannot record a failure for a notification that is not pending")
+	}
+	record.LastError = &reason
+	return s.writeListing(ident, "notification.json", record)
+}
+
 func (s *Store) Suppress(ident string) error {
 	record, err := s.GetNotification(ident)
 	if err != nil || record != nil {

@@ -334,6 +334,39 @@ func TestFailedReextractBlocksDeliveryAndExport(t *testing.T) {
 	}
 }
 
+func TestDeliveryGivesUpAfterMaxAttempts(t *testing.T) {
+	h := newHarness(t, true)
+	stats := h.scan(nil, false)
+	h.notifier.sendErr = errors.New("timeout")
+	for range maxSendAttempts {
+		if h.deliver(stats.Listings) {
+			t.Error("failed delivery reported as success")
+		}
+		h.restart()
+	}
+	h.notifier.sendErr = nil
+	if !h.deliver(stats.Listings) || h.notifier.sends != maxSendAttempts {
+		t.Errorf("sends=%d", h.notifier.sends)
+	}
+	n, _ := h.service.Store.GetNotification("123")
+	if n.Status != domain.Pending || n.Attempts != maxSendAttempts || n.LastError == nil || *n.LastError != "timeout" {
+		t.Errorf("notification %+v", n)
+	}
+}
+
+func TestInterruptedAttemptCountsTowardLimit(t *testing.T) {
+	h := newHarness(t, true)
+	stats := h.scan(nil, false)
+	for range maxSendAttempts {
+		if _, err := h.service.Store.BeginAttempt("123"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !h.deliver(stats.Listings) || h.notifier.sends != 0 {
+		t.Errorf("sends=%d", h.notifier.sends)
+	}
+}
+
 func TestDeliveryRetryAndNoResend(t *testing.T) {
 	h := newHarness(t, true)
 	stats := h.scan(nil, false)
@@ -341,8 +374,8 @@ func TestDeliveryRetryAndNoResend(t *testing.T) {
 	if h.deliver(stats.Listings) {
 		t.Error("failed delivery reported as success")
 	}
-	if n, _ := h.service.Store.GetNotification("123"); n != nil {
-		t.Error("failed delivery must not be recorded")
+	if n, _ := h.service.Store.GetNotification("123"); n == nil || n.Status != domain.Pending || n.Attempts != 1 {
+		t.Errorf("failed attempt must be recorded: %+v", n)
 	}
 	h.notifier.sendErr = nil
 	if !h.deliver(stats.Listings) {
@@ -353,7 +386,7 @@ func TestDeliveryRetryAndNoResend(t *testing.T) {
 		t.Errorf("sends=%d", h.notifier.sends)
 	}
 	n, _ := h.service.Store.GetNotification("123")
-	if n.Status != domain.Sent || *n.ChatID != -100123 || *n.FormatVersion != telegram.FormatVersion {
+	if n.Status != domain.Sent || *n.ChatID != -100123 || *n.FormatVersion != telegram.FormatVersion || n.Attempts != 0 {
 		t.Errorf("notification %+v", n)
 	}
 }

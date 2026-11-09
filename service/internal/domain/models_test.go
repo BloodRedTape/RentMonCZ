@@ -107,6 +107,10 @@ func TestNotificationValidation(t *testing.T) {
 		`{"status":"sent","sent_at":"2026-01-01T00:00:00Z","chat_id":1}`,
 		`{"status":"sent","sent_at":"2026-01-01T00:00:00Z","chat_id":1.0,"message_ids":[1],"telegram_method":"sendMessage","telegram_response":{}}`,
 		`{"status":"unknown"}`,
+		`{"status":"pending"}`,
+		`{"status":"pending","attempts":1}`,
+		`{"status":"suppressed","attempts":1}`,
+		`{"status":"sent","sent_at":"2026-01-01T00:00:00Z","last_error":"x"}`,
 	} {
 		if err := json.Unmarshal([]byte(text), &record); err == nil {
 			t.Errorf("accepted %s", text)

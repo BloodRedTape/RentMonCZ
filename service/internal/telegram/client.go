@@ -147,7 +147,7 @@ func (c *Client) call(ctx context.Context, method string, payload map[string]any
 			return nil, err
 		}
 		contentType = form.FormDataContentType()
-		timeout = 90 * time.Second
+		timeout = 10 * time.Minute
 	} else if err := json.NewEncoder(&body).Encode(payload); err != nil {
 		return nil, err
 	}

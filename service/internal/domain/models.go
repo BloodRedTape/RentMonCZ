@@ -385,6 +385,7 @@ type NotificationStatus string
 const (
 	Sent       NotificationStatus = "sent"
 	Suppressed NotificationStatus = "suppressed"
+	Pending    NotificationStatus = "pending"
 )
 
 type NotificationRecord struct {
@@ -399,6 +400,9 @@ type NotificationRecord struct {
 	FormatVersion    *int64             `json:"format_version"`
 	GoneAt           *time.Time         `json:"gone_at"`
 	GoneNotified     bool               `json:"gone_notified"`
+	Attempts         int64              `json:"attempts,omitempty"`
+	AttemptedAt      *time.Time         `json:"attempted_at,omitempty"`
+	LastError        *string            `json:"last_error,omitempty"`
 }
 
 func (r *NotificationRecord) UnmarshalJSON(data []byte) error {
@@ -416,11 +420,17 @@ func (r *NotificationRecord) UnmarshalJSON(data []byte) error {
 }
 
 func (r *NotificationRecord) Validate() error {
-	if r.Status != Sent && r.Status != Suppressed {
+	if r.Status != Sent && r.Status != Suppressed && r.Status != Pending {
 		return errors.New("status: unknown value")
 	}
 	if (r.Status == Sent) != (r.SentAt != nil) {
 		return errors.New("sent_at: only sent notifications must have sent_at")
+	}
+	if r.Status == Pending && (r.Attempts < 1 || r.AttemptedAt == nil) {
+		return errors.New("pending notifications must have attempts and attempted_at")
+	}
+	if r.Status != Pending && (r.Attempts != 0 || r.AttemptedAt != nil || r.LastError != nil) {
+		return errors.New("attempt metadata only belongs to pending notifications")
 	}
 	metadata := []bool{r.ChatID != nil, len(r.MessageIDs) > 0, r.TelegramMethod != nil, r.TelegramResponse != nil}
 	some, all := false, true

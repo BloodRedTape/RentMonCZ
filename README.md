@@ -101,7 +101,7 @@ Files in each listing's folder are independent:
 
 - `source.json`: `{raw, first_seen_at, last_seen_at}`. The full detail from the API, regardless of the filtering result. `last_seen_at` is the time of the last detail download. Data is refreshed every cycle; `first_seen_at` is preserved.
 - `extraction.json`: `{global_hash, llm_hash, details, extracted_at}`. A successful LLM result, including rooms, unknown rent and over-budget listings. The file is absent until the first successful extraction.
-- `notification.json`: `{status, sent_at, chat_id, message_ids, telegram_method, telegram_response, format_version, gone_at, gone_notified}`. For `sent`, the send time, actual chat ID, all message IDs, API method and full Telegram JSON response are stored. For an album, `message_ids[0]` is the message with the caption. For `suppressed`, send metadata is empty. A missing file means "not notified yet".
+- `notification.json`: `{status, sent_at, chat_id, message_ids, telegram_method, telegram_response, format_version, gone_at, gone_notified}`. For `sent`, the send time, actual chat ID, all message IDs, API method and full Telegram JSON response are stored. For an album, `message_ids[0]` is the message with the caption. For `suppressed`, send metadata is empty. `pending` (`attempts`, `attempted_at`, `last_error`) is written before every send attempt and replaced by `sent` on success; a failed attempt is retried on the next cycle, up to 3 attempts in total, after which the listing stays `pending` and is not sent — delete the file to try again. A missing file means "not notified yet".
 
 `current_search_ids` is updated only after the search completes successfully. Disappeared listings remain in the archive but do not take part in the current export and delivery. A search error keeps the previous set of IDs, but no delivery happens in that cycle.
 
@@ -126,7 +126,7 @@ If `MAX_RENT_AND_UTILITIES_KC` is not set, the extra limit is disabled. The valu
 4. Compute `global_hash`: SHA-256 of the title, description, price (`price_czk`, unit and currency), price note, monthly costs (`cost_of_living`), commission (`commission`), deposit, furnishing (`furnished`), the `cellar`/`balcony`/`loggia`/`terrace` flags and the `since`/`edited` dates. Separately compute `llm_hash` from the extraction contract version (`extraction.Version`) and all `extraction.Fields` actually passed to the LLM: including area, move-in date and the no-commission flag, but without publish/edit dates. Use the extraction with a matching `llm_hash`; otherwise call the LLM.
 5. Immediately save a successful extraction before applying the business filter.
 6. Apply the current rules to the facts; collect the matching listings for this cycle.
-7. Update the export, edit sent listings that changed, and send new ones without `sent`/`suppressed`.
+7. Update the export, edit sent listings that changed, and send new ones without `sent`/`suppressed`/`pending`.
 
 Hashes are serialized the same way as `json.dumps(..., ensure_ascii=False, sort_keys=True, separators=(",", ":"))` in Python (`internal/pyjson`). Since the amenity flags were added to `global_hash` and `extraction.Version` was bumped to 3, hashes saved by the Python version no longer match: each listing is re-extracted and its message re-edited once.
 

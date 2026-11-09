@@ -262,14 +262,26 @@ func (s *Service) Deliver(ctx context.Context, listings []domain.Listing) (bool,
 		if err != nil {
 			return false, err
 		}
-		if notification != nil {
+		if notification != nil && (notification.Status != domain.Pending || notification.Attempts >= maxSendAttempts) {
 			logger().Debug("Delivery skipped", "listing", ident, "status", notification.Status)
 			continue
 		}
-		logger().Info("Sending new notification", "listing", ident)
+		attempt, err := s.Store.BeginAttempt(ident)
+		if err != nil {
+			return false, err
+		}
+		logger().Info("Sending new notification", "listing", ident, "attempt", attempt)
 		delivery, err := s.Notifier.SendAd(ctx, s.Settings.TelegramChatID, listing)
 		if err != nil {
-			logger().Warn("Telegram delivery failed; will retry", "listing", ident, "error", s.describe(err))
+			reason := s.describe(err)
+			if err := s.Store.RecordFailure(ident, reason); err != nil {
+				return false, err
+			}
+			if attempt >= maxSendAttempts {
+				logger().Warn("Telegram delivery failed; giving up", "listing", ident, "attempts", attempt, "error", reason)
+			} else {
+				logger().Warn("Telegram delivery failed; will retry", "listing", ident, "attempt", attempt, "error", reason)
+			}
 			return false, nil
 		}
 		cached, err := s.Store.GetExtraction(ident)
@@ -417,6 +429,7 @@ func (s *Service) gone(ctx context.Context, ident string, record domain.Notifica
 
 const (
 	messageInterval  = 3 * time.Second
+	maxSendAttempts  = 3
 	maxRateLimitWait = time.Minute
 )
 
