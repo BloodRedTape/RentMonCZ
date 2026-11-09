@@ -71,7 +71,7 @@ service/
   internal/netutil/     # HTTP with limits; errors without URLs (Telegram URLs contain the token)
 ```
 
-`SourceListing` is a projection of the raw listing for filtering and display. `RentalDetails` holds only extracted facts: `payments`, `is_room_rent`, `area_m2`, `available_from`, `furnishing`. `Listing` is the public `{source, rental}` projection for Telegram and export. The service's external dependencies (`Source`, `Extractor`, `Notifier`) are defined as interfaces in `internal/monitor`.
+`SourceListing` is a projection of the raw listing for filtering and display. `RentalDetails` holds only extracted facts: `payments`, `is_room_rent`, `area_m2`, `available_from`, `furnishing`, `amenities`. `Listing` is the public `{source, rental}` projection for Telegram and export. The service's external dependencies (`Source`, `Extractor`, `Notifier`) are defined as interfaces in `internal/monitor`.
 
 ## Storage: one folder per listing
 
@@ -123,12 +123,12 @@ If `MAX_RENT_AND_UTILITIES_KC` is not set, the extra limit is disabled. The valu
 1. Fetch the full current search and save its IDs.
 2. Fetch fresh detail for each current listing and save the raw response.
 3. Build a `SourceListing` and check category, district and API price.
-4. Compute `global_hash`: SHA-256 of the title, description, price (`price_czk`, unit and currency), price note, monthly costs (`cost_of_living`), commission (`commission`), deposit, furnishing (`furnished`) and the `since`/`edited` dates. Separately compute `llm_hash` from the extraction contract version (`extraction.Version`) and all `extraction.Fields` actually passed to the LLM: including area, move-in date and the no-commission flag, but without publish/edit dates. Use the extraction with a matching `llm_hash`; otherwise call the LLM.
+4. Compute `global_hash`: SHA-256 of the title, description, price (`price_czk`, unit and currency), price note, monthly costs (`cost_of_living`), commission (`commission`), deposit, furnishing (`furnished`), the `cellar`/`balcony`/`loggia`/`terrace` flags and the `since`/`edited` dates. Separately compute `llm_hash` from the extraction contract version (`extraction.Version`) and all `extraction.Fields` actually passed to the LLM: including area, move-in date and the no-commission flag, but without publish/edit dates. Use the extraction with a matching `llm_hash`; otherwise call the LLM.
 5. Immediately save a successful extraction before applying the business filter.
 6. Apply the current rules to the facts; collect the matching listings for this cycle.
 7. Update the export, edit sent listings that changed, and send new ones without `sent`/`suppressed`.
 
-Hashes are serialized the same way as `json.dumps(..., ensure_ascii=False, sort_keys=True, separators=(",", ":"))` in Python (`internal/pyjson`), so values saved by the Python version remain valid.
+Hashes are serialized the same way as `json.dumps(..., ensure_ascii=False, sort_keys=True, separators=(",", ":"))` in Python (`internal/pyjson`). Since the amenity flags were added to `global_hash` and `extraction.Version` was bumped to 3, hashes saved by the Python version no longer match: each listing is re-extracted and its message re-edited once.
 
 Both hashes are stored in `extraction.json`, and their sent versions in `notification.json`. A mismatch of either hash triggers editing the original message or the first photo's caption, without resending or replacing photos. If only dates changed, LLM facts are reused and `global_hash` is updated without changing `extracted_at`. Photos and their limit are not part of the hashes and do not trigger edits. The legacy `content_hash` field is dropped on read. A Telegram error leaves the update for a retry. Old extractions without `llm_hash` or with a previous contract version are recomputed once. Changing the model or prompt without bumping the version requires `--reextract`: the flag forces re-parsing of current listings that passed the initial filter. On an LLM error the old facts are kept but not used to update a changed listing; the next cycle will retry extraction.
 
@@ -143,6 +143,8 @@ The search is limited by the API price before the LLM: listings whose total API 
 - `source`: ID, title, link, categories, district, API price, up to `TELEGRAM_MAX_PHOTOS` photos, distance, publish/edit dates.
 - `source.furnishing`: `furnished`, `partially_furnished`, `unfurnished` or `null`. Taken from the structured API field `furnished.value` (1, 3, 2 respectively); 0, missing or an unknown code — `null`. Takes priority when displayed in Telegram and is included in `global_hash`, but is not passed to the LLM.
 - `rental.furnishing`: the same values, extracted by the LLM from explicit mentions in the title/description. Used in Telegram only when `source.furnishing=null`.
+- `source.cellar`/`source.balcony`: `true` or `null`. Taken from the API flags `cellar` and `balcony`/`loggia`/`terrace`; only `true` is trusted, because Sreality reports unfilled checkboxes as `false`. Not passed to the LLM; when `true`, they take priority over `rental.amenities`.
+- `rental.amenities`: `washing_machine`, `microwave`, `oven`, `storage_room` (komora/spíž/kladovka), `cellar`, `balcony` (including loggia/terrace) are `true`/`false`/`null`, where `false` means explicitly absent and `null` means not mentioned, optional, only installable or shared. `stove`: `gas`, `electric`, `portable_electric` (vařič/plotýnka) or `null`. `bathing`: `shower`, `bathtub`, `shower_and_bathtub` or `null`. Extracted only from the title/description, never from photos. Old extractions without `amenities` load with all values `null`.
 - `rental.payments`: `rent_kc`, `utilities_kc`, `commission_kc`, `deposit_kc`. All amounts in Kč. Rent and utilities are monthly; commission and deposit are one-time. Unknown, ambiguous and zero amounts are `null`.
 - `is_room_rent=true` for explicit rental of a room/bed; the `Pokoj` category is rejected before the LLM.
 - `area_m2` — area from the listing, unknown — `null`.

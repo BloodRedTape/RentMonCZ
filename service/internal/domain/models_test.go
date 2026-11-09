@@ -67,6 +67,35 @@ func TestRentalDetailsValidation(t *testing.T) {
 	}
 }
 
+func TestAmenitiesValidation(t *testing.T) {
+	var d RentalDetails
+	if err := json.Unmarshal([]byte(validDetails), &d); err != nil || d.Amenities != (Amenities{}) {
+		t.Fatalf("old records without amenities must load: %v", err)
+	}
+	full := `{"washer":"shared_laundry","microwave":false,"oven":null,"stove":"portable_electric",` +
+		`"bathing":"shower","storage":"both","balcony":null}`
+	if err := json.Unmarshal([]byte(replace("amenities", full)), &d); err != nil {
+		t.Fatal(err)
+	}
+	if *d.Amenities.Washer != WasherSharedLaundry || *d.Amenities.Microwave || d.Amenities.Oven != nil ||
+		*d.Amenities.Stove != PortableElectricStove || *d.Amenities.Bathing != Shower || *d.Amenities.Storage != StorageRoomAndCellar {
+		t.Errorf("unexpected amenities %+v", d.Amenities)
+	}
+	for _, invalid := range []string{
+		strings.Replace(full, `"portable_electric"`, `"induction"`, 1),
+		strings.Replace(full, `"shower"`, `"sauna"`, 1),
+		strings.Replace(full, `"shared_laundry"`, `true`, 1),
+		strings.Replace(full, `"both"`, `"garage"`, 1),
+		strings.Replace(full, `"balcony":null`, `"balcony":null,"pool":true`, 1),
+		strings.Replace(full, `,"balcony":null`, ``, 1),
+		`null`,
+	} {
+		if err := json.Unmarshal([]byte(replace("amenities", invalid)), &d); err == nil {
+			t.Errorf("accepted %s", invalid)
+		}
+	}
+}
+
 func TestNotificationValidation(t *testing.T) {
 	var record NotificationRecord
 	if err := json.Unmarshal([]byte(`{"status":"suppressed","content_hash":"old"}`), &record); err != nil {

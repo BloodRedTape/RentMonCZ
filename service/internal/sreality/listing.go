@@ -74,6 +74,8 @@ func ToSourceListing(detail map[string]any, maxPhotos int) (domain.SourceListing
 		APIPriceKc:         price,
 		IsRoomCategory:     IsRoomCategory(detail),
 		Furnishing:         ListingFurnishing(detail),
+		Cellar:             presentFlag(detail, "cellar"),
+		Balcony:            presentFlag(detail, "balcony", "loggia", "terrace"),
 		LocalityName:       name,
 		MapLink:            mapLink,
 		DistanceToCenterKm: distance,
@@ -215,6 +217,16 @@ func IsRoomCategory(detail map[string]any) bool {
 	}
 	name = strings.ToLower(strings.TrimSpace(name))
 	return name == "pokoj" || name == "pokoje"
+}
+
+// presentFlag trusts only true: Sreality reports unfilled checkboxes as false.
+func presentFlag(detail map[string]any, keys ...string) *bool {
+	for _, key := range keys {
+		if value, ok := detail[key].(bool); ok && value {
+			return &value
+		}
+	}
+	return nil
 }
 
 func ListingFurnishing(detail map[string]any) *domain.Furnishing {

@@ -77,6 +77,28 @@ func TestDatesAndPhotos(t *testing.T) {
 	}
 }
 
+func TestAmenityFlags(t *testing.T) {
+	cases := []struct {
+		overrides       map[string]any
+		cellar, balcony bool
+	}{
+		{map[string]any{}, false, false},
+		{map[string]any{"cellar": false, "balcony": false, "loggia": false, "terrace": false}, false, false},
+		{map[string]any{"cellar": true, "loggia": true}, true, true},
+		{map[string]any{"balcony": false, "terrace": true}, false, true},
+		{map[string]any{"cellar": "true", "balcony": json.Number("1")}, false, false},
+	}
+	for _, c := range cases {
+		source, err := ToSourceListing(testutil.With(t, testutil.APIAd(t, 123), c.overrides), 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (source.Cellar != nil) != c.cellar || (source.Balcony != nil) != c.balcony {
+			t.Errorf("%v: cellar=%v balcony=%v", c.overrides, source.Cellar, source.Balcony)
+		}
+	}
+}
+
 func TestFurnishingCodes(t *testing.T) {
 	codes := map[any]domain.Furnishing{
 		json.Number("1"): domain.Furnished, "1": domain.Furnished,

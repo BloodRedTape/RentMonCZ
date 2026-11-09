@@ -14,12 +14,12 @@ import (
 	"rentmont/internal/testutil"
 )
 
-func TestHashesMatchPythonImplementation(t *testing.T) {
+func TestReferenceHashes(t *testing.T) {
 	ad := testutil.APIAd(t, 123)
-	if got := GlobalHash(ad); got != "b06097825b3f3fb840b95410f24db0a368a620ea60dd7f47c46e5f0bb9c9a95c" {
+	if got := GlobalHash(ad); got != "3586eda593e850044a9dbf07a745ba9ff6e41ea06629e35bf4cf298725bf7ed4" {
 		t.Errorf("global hash %s", got)
 	}
-	if got := LLMHash(ad); got != "86a28ba5b51c814324dc88cfaa726817ff02d3c45b397a90902f38ffd33fa077" {
+	if got := LLMHash(ad); got != "d8aee5aecfa20f2ff514dec6683d1fac00079626e8851b2b7ce76e2fdc2d0e54" {
 		t.Errorf("llm hash %s", got)
 	}
 	data, err := os.ReadFile("../testdata/tricky.json")
@@ -30,10 +30,10 @@ func TestHashesMatchPythonImplementation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := GlobalHash(tricky); got != "c6238909477adf704c31b9f6f841366dfa26f474b238e720425f437945b77216" {
+	if got := GlobalHash(tricky); got != "3762ffa12a3e2d69a8f486f24e6bd4819c04ec2cce53aa5816ab5ed14b506159" {
 		t.Errorf("tricky global hash %s", got)
 	}
-	if got := LLMHash(tricky); got != "82111357dddd8887baf0b3d02d0932f2f8d37b62db09f8c06e205e71465af633" {
+	if got := LLMHash(tricky); got != "5cc83e6edac8e404e87e70e22079fe5a79aaee4af97530946764ed317f993ac0" {
 		t.Errorf("tricky llm hash %s", got)
 	}
 }

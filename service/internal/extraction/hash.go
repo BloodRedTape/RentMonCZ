@@ -8,7 +8,7 @@ import (
 )
 
 // Version must be bumped when the extraction contract changes so that old facts are refreshed.
-const Version = 2
+const Version = 3
 
 var Fields = []string{
 	"advert_name", "advert_description", "price_czk", "price_note",
@@ -21,6 +21,7 @@ var HashFields = []string{
 	"advert_name", "advert_description", "price_czk", "price_unit_cb",
 	"price_currency_cb", "price_note", "cost_of_living", "commission",
 	"refundable_deposit", "since", "edited", "furnished",
+	"cellar", "balcony", "loggia", "terrace",
 }
 
 func GlobalHash(detail map[string]any) string {

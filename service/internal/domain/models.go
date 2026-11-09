@@ -23,6 +23,101 @@ func (f Furnishing) Valid() bool {
 	return f == Furnished || f == PartiallyFurnished || f == Unfurnished
 }
 
+type Stove string
+
+const (
+	GasStove              Stove = "gas"
+	ElectricStove         Stove = "electric"
+	PortableElectricStove Stove = "portable_electric"
+)
+
+func (s Stove) Valid() bool {
+	return s == GasStove || s == ElectricStove || s == PortableElectricStove
+}
+
+type Bathing string
+
+const (
+	Shower           Bathing = "shower"
+	Bathtub          Bathing = "bathtub"
+	ShowerAndBathtub Bathing = "shower_and_bathtub"
+)
+
+func (b Bathing) Valid() bool {
+	return b == Shower || b == Bathtub || b == ShowerAndBathtub
+}
+
+type Washer string
+
+const (
+	WasherInFlat        Washer = "in_flat"
+	WasherSharedLaundry Washer = "shared_laundry"
+	WasherNone          Washer = "none"
+)
+
+func (w Washer) Valid() bool {
+	return w == WasherInFlat || w == WasherSharedLaundry || w == WasherNone
+}
+
+type Storage string
+
+const (
+	StorageRoom          Storage = "storage_room"
+	StorageCellar        Storage = "cellar"
+	StorageRoomAndCellar Storage = "both"
+	StorageNone          Storage = "none"
+)
+
+func (s Storage) Valid() bool {
+	return s == StorageRoom || s == StorageCellar || s == StorageRoomAndCellar || s == StorageNone
+}
+
+func (s *Storage) WithCellar() *Storage {
+	result := StorageCellar
+	if s != nil && (*s == StorageRoom || *s == StorageRoomAndCellar) {
+		result = StorageRoomAndCellar
+	}
+	return &result
+}
+
+type Amenities struct {
+	Washer    *Washer  `json:"washer"`
+	Microwave *bool    `json:"microwave"`
+	Oven      *bool    `json:"oven"`
+	Stove     *Stove   `json:"stove"`
+	Bathing   *Bathing `json:"bathing"`
+	Storage   *Storage `json:"storage"`
+	Balcony   *bool    `json:"balcony"`
+}
+
+var amenityKeys = []string{"washer", "microwave", "oven", "stove", "bathing", "storage", "balcony"}
+
+func (a *Amenities) UnmarshalJSON(data []byte) error {
+	type plain Amenities
+	var v plain
+	if err := strictDecode(data, &v, amenityKeys...); err != nil {
+		return err
+	}
+	*a = Amenities(v)
+	return a.Validate()
+}
+
+func (a *Amenities) Validate() error {
+	if s := a.Stove; s != nil && !s.Valid() {
+		return errors.New("amenities.stove: unknown value")
+	}
+	if b := a.Bathing; b != nil && !b.Valid() {
+		return errors.New("amenities.bathing: unknown value")
+	}
+	if w := a.Washer; w != nil && !w.Valid() {
+		return errors.New("amenities.washer: unknown value")
+	}
+	if s := a.Storage; s != nil && !s.Valid() {
+		return errors.New("amenities.storage: unknown value")
+	}
+	return nil
+}
+
 const ASAP = "asap"
 
 type Payments struct {
@@ -67,6 +162,7 @@ type RentalDetails struct {
 	AreaM2        *float64    `json:"area_m2"`
 	AvailableFrom *string     `json:"available_from"`
 	Furnishing    *Furnishing `json:"furnishing"`
+	Amenities     Amenities   `json:"amenities"`
 }
 
 func (r *RentalDetails) UnmarshalJSON(data []byte) error {
@@ -92,7 +188,7 @@ func (r *RentalDetails) Normalize() error {
 	if f := r.Furnishing; f != nil && !f.Valid() {
 		return errors.New("furnishing: unknown value")
 	}
-	return nil
+	return r.Amenities.Validate()
 }
 
 func IsISODate(value string) bool {
@@ -110,6 +206,8 @@ type SourceListing struct {
 	APIPriceKc         *float64    `json:"api_price_kc"`
 	IsRoomCategory     bool        `json:"is_room_category"`
 	Furnishing         *Furnishing `json:"furnishing"`
+	Cellar             *bool       `json:"cellar"`
+	Balcony            *bool       `json:"balcony"`
 	LocalityName       *string     `json:"locality_name"`
 	MapLink            *string     `json:"map_link"`
 	DistanceToCenterKm *float64    `json:"distance_to_center_km"`
@@ -155,6 +253,17 @@ func (l Listing) Furnishing() *Furnishing {
 		return l.Source.Furnishing
 	}
 	return l.Rental.Furnishing
+}
+
+func (l Listing) Amenities() Amenities {
+	result := l.Rental.Amenities
+	if l.Source.Cellar != nil {
+		result.Storage = result.Storage.WithCellar()
+	}
+	if l.Source.Balcony != nil {
+		result.Balcony = l.Source.Balcony
+	}
+	return result
 }
 
 type ExclusionReason string

@@ -10,7 +10,7 @@ import (
 )
 
 // FormatVersion must be bumped whenever the template changes; sent messages are then re-edited.
-const FormatVersion = 1
+const FormatVersion = 2
 
 const notSpecified = "не указано"
 
@@ -21,6 +21,7 @@ func escape(s string) string { return htmlEscaper.Replace(s) }
 func FormatMessage(listing domain.Listing) string {
 	source, rental := listing.Source, listing.Rental
 	payments := rental.Payments
+	amenities := listing.Amenities()
 	area := notSpecified
 	if rental.AreaM2 != nil {
 		area = strconv.FormatFloat(*rental.AreaM2, 'g', 6, 64) + " м²"
@@ -48,6 +49,7 @@ func FormatMessage(listing domain.Listing) string {
 		fmt.Sprintf("🔐 Commission/Deposit: %s + %s", money(payments.CommissionKc), money(payments.DepositKc)),
 		"🔑 Move In: " + moveIn,
 		"🛋 Furnished: " + furnishingLabel(listing.Furnishing()),
+		fmt.Sprintf("🧺 Washer: %s · 📦 Storage: %s", washerLabel(amenities.Washer), storageLabel(amenities.Storage)),
 		fmt.Sprintf("📍 Loc: %s %s", location, distance),
 		fmt.Sprintf("🕒 Uploaded %s Updated %s", calendar(source.PublishedAt), calendar(source.UpdatedAt)),
 	}, "\n")
@@ -63,6 +65,38 @@ func furnishingLabel(f *domain.Furnishing) string {
 	case domain.PartiallyFurnished:
 		return "частично"
 	case domain.Unfurnished:
+		return "нет"
+	}
+	return notSpecified
+}
+
+func washerLabel(w *domain.Washer) string {
+	if w == nil {
+		return notSpecified
+	}
+	switch *w {
+	case domain.WasherInFlat:
+		return "есть"
+	case domain.WasherSharedLaundry:
+		return "прачечная"
+	case domain.WasherNone:
+		return "нет"
+	}
+	return notSpecified
+}
+
+func storageLabel(s *domain.Storage) string {
+	if s == nil {
+		return notSpecified
+	}
+	switch *s {
+	case domain.StorageRoom:
+		return "кладовка"
+	case domain.StorageCellar:
+		return "подвал"
+	case domain.StorageRoomAndCellar:
+		return "кладовка и подвал"
+	case domain.StorageNone:
 		return "нет"
 	}
 	return notSpecified

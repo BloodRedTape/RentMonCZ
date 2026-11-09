@@ -31,8 +31,8 @@ func TestFormat(t *testing.T) {
 			t.Errorf("missing %q in\n%s", expected, text)
 		}
 	}
-	if len(strings.Split(text, "\n")) != 7 {
-		t.Error("expected 7 lines")
+	if len(strings.Split(text, "\n")) != 8 {
+		t.Error("expected 8 lines")
 	}
 	for value, expected := range map[string]string{"": "не указано", "asap": "как можно скорее", "2026-12-01": "01.12.2026"} {
 		listing.Rental.AvailableFrom = nil
@@ -56,6 +56,31 @@ func TestFurnishingPriority(t *testing.T) {
 	listing.Source.Furnishing = &api
 	if !strings.Contains(FormatMessage(listing), "🛋 Furnished: "+labels[api]+"\n") {
 		t.Error("API furnishing must take priority")
+	}
+}
+
+func TestAmenities(t *testing.T) {
+	listing := testutil.Record(t)
+	if text := FormatMessage(listing); !strings.Contains(text, "🛋 Furnished: не указано\n🧺 Washer: не указано · 📦 Storage: не указано\n") {
+		t.Error(text)
+	}
+	yes := true
+	washer, storage := domain.WasherSharedLaundry, domain.StorageRoom
+	listing.Rental.Amenities = domain.Amenities{Washer: &washer, Storage: &storage, Balcony: &yes}
+	if text := FormatMessage(listing); !strings.Contains(text, "🧺 Washer: прачечная · 📦 Storage: кладовка\n") {
+		t.Error(text)
+	}
+	listing.Source.Cellar = &yes
+	for llm, expected := range map[domain.Storage]string{domain.StorageRoom: "кладовка и подвал", domain.StorageNone: "подвал",
+		domain.StorageCellar: "подвал", domain.StorageRoomAndCellar: "кладовка и подвал"} {
+		listing.Rental.Amenities.Storage = &llm
+		if !strings.Contains(FormatMessage(listing), "📦 Storage: "+expected+"\n") {
+			t.Errorf("storage %s with API cellar", llm)
+		}
+	}
+	listing.Rental.Amenities.Storage = nil
+	if !strings.Contains(FormatMessage(listing), "📦 Storage: подвал\n") {
+		t.Error("API cellar alone must show cellar")
 	}
 }
 

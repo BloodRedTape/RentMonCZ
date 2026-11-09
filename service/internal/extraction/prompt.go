@@ -17,6 +17,44 @@ negation and partial qualifiers. Appliances, a fitted kitchen, bathroom fittings
 or a single wardrobe alone do not establish that the flat is furnished or
 partially furnished. Do not infer furnishing from photos, price, or the absence
 of furniture mentions. Do not treat the absence of a statement as unfurnished.
+amenities: facts about the flat itself, stated explicitly in the title or
+advert_description. For every boolean amenity return true when the flat
+explicitly has it, false only when its absence is explicitly stated (bez
+mikrovlnky, bez balkonu), and null when it is not mentioned, optional, available
+for an extra fee, only possible to install, shared with other flats, or
+contradictory. Respect negation. Never infer amenities from photos, price,
+furnishing or the building type.
+amenities.washer: "in_flat" when a washing machine is in the flat (pracka,
+pracka se susickou, pracka v byte); "shared_laundry" when there is no washer in
+the flat but a shared laundry room or shared washing machine in the building is
+stated (pradelna, spolecna pracka); "none" when the absence of any washer is
+explicitly stated (bez pracky); null otherwise, including when a washer can
+only be connected (moznost pripojeni pracky, misto pro pracku, pripojka pro
+pracku). If both an in-flat washer and a laundry room are stated, use "in_flat".
+amenities.microwave: mikrovlnna trouba, mikrovlnka, trouba s mikrovlnnou funkci.
+amenities.oven: a regular baking oven (trouba, horkovzdusna trouba, vestavena
+trouba, elektricka trouba). A cooker (sporak, kombinovany sporak, plynovy
+sporak, elektricky sporak) includes an oven. A microwave alone is not an oven.
+A hob alone (varna deska, indukcni deska) says nothing about an oven.
+amenities.stove: the cooking hob type. "gas" for plynovy sporak, plynova varna
+deska or kombinovany sporak (gas hob with electric oven); "electric" for a fixed
+electric hob or cooker: elektricky sporak, sklokeramicka deska, indukcni deska,
+elektricka varna deska; "portable_electric" for a small freestanding cooker:
+varic, elektricky varic, plotynka, prenosna plotynka, dvouplotynkovy varic,
+stolni varic. A fitted kitchen or a "kuchynska linka se spotrebici" without a
+stated hob type is null. If several types are listed, prefer the fixed one.
+amenities.bathing: "shower" for sprcha, sprchovy kout, sprchova kabina;
+"bathtub" for vana, including vana se sprchou; "shower_and_bathtub" when both a
+bathtub and a separate shower are stated. A bathroom (koupelna) alone is null.
+amenities.storage: extra storage space belonging to the flat. "storage_room"
+for a storage room inside the flat (komora, spiz, kladovka, sklad v byte);
+"cellar" for a cellar or cellar storage unit (sklep, sklepni koje, sklepni box,
+sklepni kobka); "both" when both are stated; "none" when the absence of any
+storage room and cellar is explicitly stated; null otherwise. A wardrobe,
+built-in closets or a walk-in closet (satna) are not a storage room. A shared
+bicycle or pram room (kolarna, kocarkarna) is not storage.
+amenities.balcony: balkon, lodzie or terasa belonging to the flat. A French
+balcony (francouzsky balkon) is null. A shared garden or courtyard is null.
 is_room_rent: true only when the category, title or description explicitly says
 that ONLY a room or a bed/shared room is offered (pokoj, pronajem pokoje,
 spolubydleni). A flat having rooms (e.g. 2+kk, two bedrooms) is not room rental.
@@ -50,6 +88,21 @@ Use price_czk for rent only when the listing doesn't indicate a bundled total.
 const schema = `{
   "$defs": {
     "Furnishing": {"enum": ["furnished", "partially_furnished", "unfurnished"], "title": "Furnishing", "type": "string"},
+    "Amenities": {
+      "additionalProperties": false,
+      "properties": {
+        "washer": {"anyOf": [{"enum": ["in_flat", "shared_laundry", "none"], "type": "string"}, {"type": "null"}]},
+        "microwave": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "oven": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "stove": {"anyOf": [{"enum": ["gas", "electric", "portable_electric"], "type": "string"}, {"type": "null"}]},
+        "bathing": {"anyOf": [{"enum": ["shower", "bathtub", "shower_and_bathtub"], "type": "string"}, {"type": "null"}]},
+        "storage": {"anyOf": [{"enum": ["storage_room", "cellar", "both", "none"], "type": "string"}, {"type": "null"}]},
+        "balcony": {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
+      },
+      "required": ["washer", "microwave", "oven", "stove", "bathing", "storage", "balcony"],
+      "title": "Amenities",
+      "type": "object"
+    },
     "Payments": {
       "additionalProperties": false,
       "properties": {
@@ -70,9 +123,10 @@ const schema = `{
     "is_room_rent": {"title": "Is Room Rent", "type": "boolean"},
     "area_m2": {"anyOf": [{"exclusiveMinimum": 0, "type": "number"}, {"type": "null"}], "title": "Area M2"},
     "available_from": {"anyOf": [{"format": "date", "type": "string"}, {"const": "asap", "type": "string"}, {"type": "null"}], "title": "Available From"},
-    "furnishing": {"anyOf": [{"$ref": "#/$defs/Furnishing"}, {"type": "null"}]}
+    "furnishing": {"anyOf": [{"$ref": "#/$defs/Furnishing"}, {"type": "null"}]},
+    "amenities": {"$ref": "#/$defs/Amenities"}
   },
-  "required": ["payments", "is_room_rent", "area_m2", "available_from", "furnishing"],
+  "required": ["payments", "is_room_rent", "area_m2", "available_from", "furnishing", "amenities"],
   "title": "RentalDetails",
   "type": "object"
 }`
