@@ -1,1 +1,0 @@
-"""Sreality rental monitoring package."""
