@@ -423,17 +423,17 @@ func TestBudgetChangesUseSavedFacts(t *testing.T) {
 	h := newHarness(t, true)
 	h.extractor.facts = rental(testutil.F(12000), testutil.F(3000), false)
 	h.scan(nil, false)
-	h.service.Settings.MaxRentKc = 12500
+	h.service.Settings.SoloCheapMaxRentKc = 12500
 	if stats := h.scan(nil, false); stats.Excluded != 0 {
 		t.Error("12000 < 12500 must pass")
 	}
-	h.service.Settings.MaxRentKc = 12000
+	h.service.Settings.SoloCheapMaxRentKc = 12000
 	if stats := h.scan(nil, false); stats.Excluded != 1 {
 		t.Error("rent limit not recomputed")
 	}
-	h.service.Settings.MaxRentKc = 13500
+	h.service.Settings.SoloCheapMaxRentKc = 13500
 	limit := 15000
-	h.service.Settings.MaxRentAndUtilitiesKc = &limit
+	h.service.Settings.SoloCheapMaxRentAndUtilitiesKc = &limit
 	if stats := h.scan(nil, false); stats.Excluded != 1 {
 		t.Error("total limit not applied")
 	}
@@ -444,6 +444,30 @@ func TestBudgetChangesUseSavedFacts(t *testing.T) {
 		}
 	}); n != 0 {
 		t.Error("budget change must not call the LLM")
+	}
+}
+
+func TestCategoriesTagListings(t *testing.T) {
+	h := newHarness(t, true)
+	layout := func(value int, price float64) map[string]any {
+		return testutil.With(t, testutil.APIAd(t, 123), map[string]any{
+			"category_sub_cb": map[string]any{"name": "3+kk", "value": value}, "price_czk": price})
+	}
+	h.extractor.facts = rental(testutil.F(12000), testutil.F(3000), false)
+	if stats := h.scan(layout(6, 12000), false); len(stats.Listings) != 1 ||
+		!reflect.DeepEqual(stats.Listings[0].Categories, []string{"solo_cheap", "duo_cheap"}) {
+		t.Errorf("listings %+v", stats.Listings)
+	}
+	if stats := h.scan(layout(4, 12000), false); !reflect.DeepEqual(stats.Listings[0].Categories, []string{"solo_cheap"}) {
+		t.Errorf("listings %+v", stats.Listings)
+	}
+	h.extractor.facts = rental(testutil.F(20000), testutil.F(5000), false)
+	if stats := h.scan(layout(5, 20000), true); len(stats.Listings) != 1 ||
+		!reflect.DeepEqual(stats.Listings[0].Categories, []string{"duo_cheap"}) {
+		t.Errorf("listings %+v", stats.Listings)
+	}
+	if stats := h.scan(layout(4, 20000), false); stats.Excluded != 1 {
+		t.Error("2+kk over the solo budget must be excluded")
 	}
 }
 

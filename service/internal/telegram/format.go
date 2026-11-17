@@ -10,7 +10,7 @@ import (
 )
 
 // FormatVersion must be bumped whenever the template changes; sent messages are then re-edited.
-const FormatVersion = 3
+const FormatVersion = 4
 
 const notSpecified = "не указано"
 
@@ -43,7 +43,7 @@ func FormatMessage(listing domain.Listing) string {
 	if source.DistanceToCenterKm != nil {
 		distance = fmt.Sprintf("≈%.1f km to center", *source.DistanceToCenterKm)
 	}
-	return strings.Join([]string{
+	lines := []string{
 		fmt.Sprintf(`🏠 <a href="%s">%s</a> — %s`, escape(source.Link), title, area),
 		"💰 Price: " + moneyPair(payments.RentKc, payments.UtilitiesKc),
 		fmt.Sprintf("🔐 Commission/Deposit: %s + %s", money(payments.CommissionKc), money(payments.DepositKc)),
@@ -52,7 +52,11 @@ func FormatMessage(listing domain.Listing) string {
 		fmt.Sprintf("🧺 Washer: %s · 📦 Storage: %s", washerLabel(amenities.Washer, listing.WasherFromPhotos()), storageLabel(amenities.Storage)),
 		fmt.Sprintf("📍 Loc: %s %s", location, distance),
 		fmt.Sprintf("🕒 Uploaded %s Updated %s", calendar(source.PublishedAt), calendar(source.UpdatedAt)),
-	}, "\n")
+	}
+	if len(listing.Categories) > 0 {
+		lines = append(lines, "#"+strings.Join(listing.Categories, " #"))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func furnishingLabel(f *domain.Furnishing) string {

@@ -34,6 +34,11 @@ func TestFormat(t *testing.T) {
 	if len(strings.Split(text, "\n")) != 8 {
 		t.Error("expected 8 lines")
 	}
+	tagged := listing
+	tagged.Categories = []string{"solo_cheap", "duo_cheap"}
+	if !strings.HasSuffix(FormatMessage(tagged), "\n#solo_cheap #duo_cheap") {
+		t.Error("missing category hashtags")
+	}
 	for value, expected := range map[string]string{"": "не указано", "asap": "как можно скорее", "2026-12-01": "01.12.2026"} {
 		listing.Rental.AvailableFrom = nil
 		if value != "" {

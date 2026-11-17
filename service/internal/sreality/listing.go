@@ -40,6 +40,10 @@ func ToSourceListing(detail map[string]any, maxPhotos int) (domain.SourceListing
 	if err != nil {
 		return domain.SourceListing{}, fmt.Errorf("category_type_cb: %w", err)
 	}
+	layout, err := jsonval.OptInt(jsonval.Object(detail["category_sub_cb"])["value"])
+	if err != nil {
+		return domain.SourceListing{}, fmt.Errorf("category_sub_cb: %w", err)
+	}
 	district, err := jsonval.OptInt(locality["district_id"])
 	if err != nil {
 		return domain.SourceListing{}, fmt.Errorf("district_id: %w", err)
@@ -70,6 +74,7 @@ func ToSourceListing(detail map[string]any, maxPhotos int) (domain.SourceListing
 		Link:               ListingLink(detail),
 		CategoryMain:       categoryMain,
 		CategoryType:       categoryType,
+		Layout:             layout,
 		DistrictID:         district,
 		APIPriceKc:         price,
 		IsRoomCategory:     IsRoomCategory(detail),

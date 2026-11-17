@@ -221,6 +221,7 @@ type SourceListing struct {
 	Link               string      `json:"link"`
 	CategoryMain       *int64      `json:"category_main"`
 	CategoryType       *int64      `json:"category_type"`
+	Layout             *int64      `json:"layout"`
 	DistrictID         *int64      `json:"district_id"`
 	APIPriceKc         *float64    `json:"api_price_kc"`
 	IsRoomCategory     bool        `json:"is_room_category"`
@@ -263,8 +264,9 @@ func IsHTTPURL(value string) bool {
 }
 
 type Listing struct {
-	Source SourceListing `json:"source"`
-	Rental RentalDetails `json:"rental"`
+	Source     SourceListing `json:"source"`
+	Rental     RentalDetails `json:"rental"`
+	Categories []string      `json:"categories"`
 }
 
 func (l Listing) Furnishing() *Furnishing {
@@ -301,7 +303,22 @@ const (
 	UnknownRent           ExclusionReason = "unknown_rent"
 	RentLimit             ExclusionReason = "rent_limit"
 	RentAndUtilitiesLimit ExclusionReason = "rent_and_utilities_limit"
+	LayoutFilter          ExclusionReason = "layout"
 )
+
+type Category struct {
+	Tag                   string
+	MaxRentKc             int
+	MaxRentAndUtilitiesKc *int
+	Layouts               []int64
+}
+
+func (c Category) PriceCeiling() int {
+	if c.MaxRentAndUtilitiesKc != nil {
+		return max(c.MaxRentKc, *c.MaxRentAndUtilitiesKc)
+	}
+	return c.MaxRentKc
+}
 
 type SourceRecord struct {
 	Raw         map[string]any `json:"raw"`

@@ -66,7 +66,7 @@ func (s *Service) Scan(ctx context.Context, reextract bool) (domain.ScanStats, e
 	started := time.Now()
 	initial := !s.Store.Initialized()
 	logger().Info("Scan started", "initial", initial, "reextract", reextract)
-	ads, err := s.Source.Search(ctx, s.Settings.DistrictID, s.Settings.MaxRentKc)
+	ads, err := s.Source.Search(ctx, s.Settings.DistrictID, s.Settings.SearchCeiling())
 	if err != nil {
 		return domain.ScanStats{}, err
 	}
@@ -141,8 +141,17 @@ func (s *Service) scanListing(ctx context.Context, ident string, initial, reextr
 	if err != nil {
 		return nil, err
 	}
-	if reason := filters.SourceRejection(source, s.Settings.DistrictID, s.Settings.MaxRentKc); reason != "" {
-		logger().Debug("Listing excluded by source filter", "listing", ident, "reason", reason)
+	var candidates []domain.Category
+	var reasons []string
+	for _, category := range s.Settings.Categories() {
+		if reason := filters.SourceRejection(source, s.Settings.DistrictID, category); reason != "" {
+			reasons = append(reasons, category.Tag+":"+string(reason))
+			continue
+		}
+		candidates = append(candidates, category)
+	}
+	if len(candidates) == 0 {
+		logger().Debug("Listing excluded by source filter", "listing", ident, "reasons", reasons)
 		stats.Excluded++
 		return nil, nil
 	}
@@ -182,15 +191,23 @@ func (s *Service) scanListing(ctx context.Context, ident string, initial, reextr
 		}
 		logger().Info("Extracted listing", "listing", ident, "global_hash", currentHash, "llm_hash", inputHash)
 	}
-	if reason := filters.RentalRejection(rental, s.Settings.MaxRentKc, s.Settings.MaxRentAndUtilitiesKc); reason != "" {
-		logger().Debug("Listing excluded by rental filter", "listing", ident, "reason", reason)
+	tags := []string{}
+	for _, category := range candidates {
+		if reason := filters.RentalRejection(rental, category); reason != "" {
+			reasons = append(reasons, category.Tag+":"+string(reason))
+			continue
+		}
+		tags = append(tags, category.Tag)
+	}
+	if len(tags) == 0 {
+		logger().Debug("Listing excluded by rental filter", "listing", ident, "reasons", reasons)
 		stats.Excluded++
 		return nil, nil
 	}
 	if err := s.inspectPhotos(ctx, ident, detail, &rental, stats); err != nil {
 		return nil, err
 	}
-	logger().Debug("Listing eligible", "listing", ident)
+	logger().Debug("Listing eligible", "listing", ident, "categories", tags)
 	if initial && !s.Settings.NotifyExisting {
 		notification, err := s.Store.GetNotification(ident)
 		if err != nil {
@@ -203,7 +220,7 @@ func (s *Service) scanListing(ctx context.Context, ident string, initial, reextr
 			logger().Info("Initial notification suppressed", "listing", ident)
 		}
 	}
-	return &domain.Listing{Source: source, Rental: rental}, nil
+	return &domain.Listing{Source: source, Rental: rental, Categories: tags}, nil
 }
 
 // inspectPhotos looks for a washer in photos only when the text left it unknown.
@@ -359,7 +376,8 @@ func (s *Service) edit(ctx context.Context, ident string, record domain.Notifica
 	if err != nil {
 		return err
 	}
-	response, err := s.Notifier.EditAd(ctx, record, domain.Listing{Source: sourceListing, Rental: cached.Details})
+	tags := filters.Tags(sourceListing, cached.Details, s.Settings.DistrictID, s.Settings.Categories())
+	response, err := s.Notifier.EditAd(ctx, record, domain.Listing{Source: sourceListing, Rental: cached.Details, Categories: tags})
 	if err != nil {
 		return err
 	}

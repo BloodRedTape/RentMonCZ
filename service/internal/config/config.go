@@ -8,35 +8,60 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+
+	"rentmont/internal/domain"
 )
 
 type Settings struct {
-	OpenAIAPIKey          string
-	OpenAIModel           string
-	OpenAIBaseURL         string
-	TelegramBotToken      string
-	TelegramChatID        string
-	TelegramMaxPhotos     int
-	PollSeconds           int
-	MaxRentKc             int
-	MaxRentAndUtilitiesKc *int
-	DistrictID            int
-	DataDir               string
-	NotifyExisting        bool
-	VisionEnabled         bool
+	OpenAIAPIKey                   string
+	OpenAIModel                    string
+	OpenAIBaseURL                  string
+	TelegramBotToken               string
+	TelegramChatID                 string
+	TelegramMaxPhotos              int
+	PollSeconds                    int
+	SoloCheapMaxRentKc             int
+	SoloCheapMaxRentAndUtilitiesKc *int
+	DuoCheapMaxRentKc              int
+	DuoCheapMaxRentAndUtilitiesKc  int
+	DistrictID                     int
+	DataDir                        string
+	NotifyExisting                 bool
+	VisionEnabled                  bool
 }
 
 func Default() Settings {
 	return Settings{
-		OpenAIModel:       "gpt-5.4-mini",
-		OpenAIBaseURL:     "https://api.openai.com/v1",
-		TelegramMaxPhotos: 3,
-		PollSeconds:       600,
-		MaxRentKc:         13500,
-		DistrictID:        72,
-		DataDir:           "data",
-		VisionEnabled:     true,
+		OpenAIModel:                   "gpt-5.4-mini",
+		OpenAIBaseURL:                 "https://api.openai.com/v1",
+		TelegramMaxPhotos:             3,
+		PollSeconds:                   600,
+		SoloCheapMaxRentKc:            13500,
+		DuoCheapMaxRentKc:             20001,
+		DuoCheapMaxRentAndUtilitiesKc: 25001,
+		DistrictID:                    72,
+		DataDir:                       "data",
+		VisionEnabled:                 true,
 	}
+}
+
+// duoLayouts are Sreality category_sub_cb codes: 2+1, 3+kk, 3+1, 4+kk, 4+1, 5+kk, 5+1, 6 and more.
+var duoLayouts = []int64{5, 6, 7, 8, 9, 10, 11, 12}
+
+func (s Settings) Categories() []domain.Category {
+	duoTotal := s.DuoCheapMaxRentAndUtilitiesKc
+	return []domain.Category{
+		{Tag: "solo_cheap", MaxRentKc: s.SoloCheapMaxRentKc, MaxRentAndUtilitiesKc: s.SoloCheapMaxRentAndUtilitiesKc},
+		{Tag: "duo_cheap", MaxRentKc: s.DuoCheapMaxRentKc, MaxRentAndUtilitiesKc: &duoTotal, Layouts: duoLayouts},
+	}
+}
+
+func (s Settings) SearchCeiling() int {
+	ceiling := 0
+	for _, category := range s.Categories() {
+		ceiling = max(ceiling, category.PriceCeiling())
+	}
+	return ceiling
 }
 
 type ValidationError struct{ Fields []string }
@@ -63,12 +88,19 @@ func FromLookup(lookup func(string) (string, bool)) (Settings, error) {
 	p.text("DATA_DIR", &s.DataDir, false)
 	p.integer("TELEGRAM_MAX_PHOTOS", &s.TelegramMaxPhotos, 0, 10)
 	p.integer("POLL_SECONDS", &s.PollSeconds, 1, -1)
-	p.integer("MAX_RENT_KC", &s.MaxRentKc, 1, -1)
+	p.integer("SOLO_CHEAP_MAX_RENT_KC", &s.SoloCheapMaxRentKc, 1, -1)
+	p.integer("DUO_CHEAP_MAX_RENT_KC", &s.DuoCheapMaxRentKc, 1, -1)
+	p.integer("DUO_CHEAP_MAX_RENT_AND_UTILITIES_KC", &s.DuoCheapMaxRentAndUtilitiesKc, 1, -1)
 	p.integer("DISTRICT_ID", &s.DistrictID, 1, -1)
-	if _, ok := lookup("MAX_RENT_AND_UTILITIES_KC"); ok {
+	if _, ok := lookup("SOLO_CHEAP_MAX_RENT_AND_UTILITIES_KC"); ok {
 		var limit int
-		if p.integer("MAX_RENT_AND_UTILITIES_KC", &limit, 1, -1) {
-			s.MaxRentAndUtilitiesKc = &limit
+		if p.integer("SOLO_CHEAP_MAX_RENT_AND_UTILITIES_KC", &limit, 1, -1) {
+			s.SoloCheapMaxRentAndUtilitiesKc = &limit
+		}
+	}
+	for _, renamed := range []string{"MAX_RENT_KC", "MAX_RENT_AND_UTILITIES_KC"} {
+		if _, ok := lookup(renamed); ok {
+			p.fail(renamed + " (renamed to SOLO_CHEAP_" + renamed + ")")
 		}
 	}
 	p.boolean("NOTIFY_EXISTING", &s.NotifyExisting)
