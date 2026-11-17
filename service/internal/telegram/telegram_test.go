@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -112,7 +113,7 @@ func TestSendMultipartAndFallback(t *testing.T) {
 		for _, status := range []int{200, 400, 429} {
 			var posts []*http.Request
 			var bodies [][]byte
-			client := New(testutil.Client(func(req *http.Request) *http.Response {
+			client := newTest(testutil.Client(func(req *http.Request) *http.Response {
 				if req.Method == http.MethodGet {
 					return testutil.RespondBytes(200, testutil.PhotoBytes)
 				}
@@ -172,6 +173,9 @@ func TestSendMultipartAndFallback(t *testing.T) {
 			if count > 0 && status == 400 {
 				expectedPosts = 2
 			}
+			if count > 0 && status == 429 {
+				expectedPosts = DefaultMaxRetries + 1
+			}
 			if len(posts) != expectedPosts {
 				t.Errorf("%s: %d posts", name, len(posts))
 			}
@@ -180,20 +184,20 @@ func TestSendMultipartAndFallback(t *testing.T) {
 }
 
 func TestValidationAndRedaction(t *testing.T) {
-	ok := New(testutil.Client(func(*http.Request) *http.Response { return testutil.Respond(200, `{"ok":true}`) }), "secret")
+	ok := newTest(testutil.Client(func(*http.Request) *http.Response { return testutil.Respond(200, `{"ok":true}`) }), "secret")
 	if _, err := ok.send(context.Background(), domain.SendMessage, map[string]any{"chat_id": "1"}, nil); err == nil {
 		t.Error("missing message metadata accepted")
 	}
-	html := New(testutil.Client(func(*http.Request) *http.Response { return testutil.Respond(200, "<html>") }), "secret")
+	html := newTest(testutil.Client(func(*http.Request) *http.Response { return testutil.Respond(200, "<html>") }), "secret")
 	if _, err := html.DownloadPhoto(context.Background(), "https://example.com/p.jpg"); err == nil {
 		t.Error("HTML accepted as photo")
 	}
-	rejected := New(testutil.Client(func(*http.Request) *http.Response { return testutil.Respond(400, `{"description":"Rejected"}`) }), "secret")
+	rejected := newTest(testutil.Client(func(*http.Request) *http.Response { return testutil.Respond(400, `{"description":"Rejected"}`) }), "secret")
 	var rejection *Rejected
 	if _, err := rejected.call(context.Background(), "sendPhoto", map[string]any{}, nil); !errors.As(err, &rejection) {
 		t.Errorf("expected rejection, got %v", err)
 	}
-	failing := New(&http.Client{Transport: failingTransport{}}, "secret")
+	failing := newTest(&http.Client{Transport: failingTransport{}}, "secret")
 	if _, err := failing.call(context.Background(), "sendMessage", map[string]any{}, nil); err == nil || strings.Contains(err.Error(), "secret") {
 		t.Errorf("transport errors must not leak the token: %v", err)
 	}
@@ -225,7 +229,7 @@ func TestMarkGoneKeepsEntitiesAndBody(t *testing.T) {
 		record := domain.NotificationRecord{Status: domain.Sent, ChatID: &chat, MessageIDs: []int64{42},
 			TelegramMethod: &method, TelegramResponse: testutil.JSON(t, `{"ok":true,"result":`+result+`}`), GoneAt: &gone}
 		var payload map[string]any
-		client := New(testutil.Client(func(req *http.Request) *http.Response {
+		client := newTest(testutil.Client(func(req *http.Request) *http.Response {
 			body, _ := io.ReadAll(req.Body)
 			_ = json.Unmarshal(body, &payload)
 			return testutil.Respond(400, `{"ok":false,"description":"Bad Request: message is not modified"}`)
@@ -239,14 +243,67 @@ func TestMarkGoneKeepsEntitiesAndBody(t *testing.T) {
 	}
 }
 
+func newTest(client *http.Client, token string) *Client {
+	c := New(client, token)
+	now := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+	c.Now = func() time.Time { return now }
+	c.Sleep = func(_ context.Context, d time.Duration) { now = now.Add(d) }
+	return c
+}
+
 func TestRateLimitedRetryAfter(t *testing.T) {
-	client := New(testutil.Client(func(*http.Request) *http.Response {
-		return testutil.Respond(429, `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 17","parameters":{"retry_after":17}}`)
+	limited := 2
+	posts := 0
+	client := newTest(testutil.Client(func(*http.Request) *http.Response {
+		posts++
+		if posts <= limited {
+			return testutil.Respond(429, `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 17","parameters":{"retry_after":17}}`)
+		}
+		return testutil.Respond(200, `{"ok":true,"result":true}`)
 	}), "secret")
+	var slept []time.Duration
+	sleep := client.Sleep
+	client.Sleep = func(ctx context.Context, d time.Duration) { slept = append(slept, d); sleep(ctx, d) }
+	if _, err := client.call(context.Background(), "editMessageText", map[string]any{}, nil); err != nil {
+		t.Fatalf("rate limit must be waited out: %v", err)
+	}
+	if posts != 3 || !reflect.DeepEqual(slept, []time.Duration{17 * time.Second, 17 * time.Second}) {
+		t.Errorf("posts=%d slept=%v", posts, slept)
+	}
+
+	limited, posts = 100, 0
 	_, err := client.call(context.Background(), "editMessageText", map[string]any{}, nil)
-	var limited *RateLimited
+	var rateLimited *RateLimited
 	var status *netutil.StatusError
-	if !errors.As(err, &limited) || limited.RetryAfter != 17*time.Second || !errors.As(err, &status) || status.Code != 429 {
+	if !errors.As(err, &rateLimited) || rateLimited.RetryAfter != 17*time.Second || !errors.As(err, &status) || status.Code != 429 {
 		t.Errorf("unexpected error %v", err)
+	}
+	if posts != DefaultMaxRetries+1 {
+		t.Errorf("posts=%d", posts)
+	}
+}
+
+func TestRequestsArePacedByMessageCount(t *testing.T) {
+	client := newTest(testutil.Client(func(req *http.Request) *http.Response {
+		if req.Method == http.MethodGet {
+			return testutil.RespondBytes(200, testutil.PhotoBytes)
+		}
+		if strings.HasSuffix(req.URL.Path, "sendMediaGroup") {
+			return testutil.Respond(200, `{"ok":true,"result":[`+
+				`{"message_id":1,"chat":{"id":-100123}},{"message_id":2,"chat":{"id":-100123}},{"message_id":3,"chat":{"id":-100123}}]}`)
+		}
+		return testutil.Respond(200, `{"ok":true,"result":{"message_id":4,"chat":{"id":-100123}}}`)
+	}), "secret")
+	var slept []time.Duration
+	sleep := client.Sleep
+	client.Sleep = func(ctx context.Context, d time.Duration) { slept = append(slept, d); sleep(ctx, d) }
+	album := testutil.Record(t, "https://example.com/1.jpg", "https://example.com/2.jpg", "https://example.com/3.jpg")
+	for _, listing := range []domain.Listing{album, testutil.Record(t), testutil.Record(t)} {
+		if _, err := client.SendAd(context.Background(), "1", listing); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if expected := []time.Duration{9 * time.Second, 3 * time.Second}; !reflect.DeepEqual(slept, expected) {
+		t.Errorf("slept %v, want %v", slept, expected)
 	}
 }

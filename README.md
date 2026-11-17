@@ -178,6 +178,8 @@ The title is a clickable link. The message contains rent and utilities with a to
 
 Photos: `TELEGRAM_MAX_PHOTOS` sets the maximum number of JPEG/PNG images (default 3, range 0–10; 0 — text only), up to 10 MB each. They are downloaded locally and sent as multipart via `sendPhoto`/`sendMediaGroup`. For `*.sdn.cz`, the `fl=res,1200,1200,1|shr,,20|jpg,80` processing is applied. A failed image is skipped. With no photos or on an explicit upload rejection (400), text is sent. On a timeout/rate limit the notification stays unsent.
 
+Rate limits are handled inside the Telegram client: requests are spaced 3 s per message (an album of N photos counts as N messages, so ≤20 messages/minute), and a 429 response is waited out using `retry_after` and retried up to 5 times. Callers only see the final result; a rate limit no longer consumes a delivery attempt unless all retries fail.
+
 To edit a text message, `chat_id` and `message_ids[0]` are used with `editMessageText`; for a photo/album, with `editMessageCaption`. When a listing disappears from search and the detail API confirms 404/410, `🔴 Gone DD.MM.YYYY` is appended while preserving the original formatting; the first-detection date and edit status are stored in `gone_at`/`gone_notified`. A crash between the message being accepted and the status being saved may cause duplicates: the API does not provide exactly-once. The bot token is not stored; the Telegram response may contain chat data, so do not publish `data/`.
 
 ## Logs

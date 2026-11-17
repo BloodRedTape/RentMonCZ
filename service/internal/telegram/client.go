@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"rentmont/internal/domain"
@@ -25,18 +26,29 @@ import (
 )
 
 const (
-	DefaultBaseURL = "https://api.telegram.org"
-	MaxPhotoBytes  = 10 << 20
+	DefaultBaseURL    = "https://api.telegram.org"
+	MaxPhotoBytes     = 10 << 20
+	DefaultInterval   = 3 * time.Second
+	DefaultMaxRetries = 5
 )
 
+// Client paces its own requests and waits out 429 responses, so callers only see final results.
 type Client struct {
-	HTTP    *http.Client
-	Token   string
-	BaseURL string
+	HTTP       *http.Client
+	Token      string
+	BaseURL    string
+	Interval   time.Duration
+	MaxRetries int
+	Sleep      func(context.Context, time.Duration)
+	Now        func() time.Time
+
+	mu   sync.Mutex
+	next time.Time
 }
 
 func New(client *http.Client, token string) *Client {
-	return &Client{HTTP: client, Token: token, BaseURL: DefaultBaseURL}
+	return &Client{HTTP: client, Token: token, BaseURL: DefaultBaseURL, Interval: DefaultInterval,
+		MaxRetries: DefaultMaxRetries, Sleep: netutil.Sleep, Now: time.Now}
 }
 
 func logger() *slog.Logger { return slog.Default().With("module", "telegram") }
@@ -120,6 +132,47 @@ type attachment struct {
 }
 
 func (c *Client) call(ctx context.Context, method string, payload map[string]any, files []attachment) (map[string]any, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	messages := 1
+	if method == string(domain.SendMediaGroup) {
+		messages = len(files)
+	}
+	for attempt := 1; ; attempt++ {
+		if wait := c.next.Sub(c.now()); wait > 0 {
+			c.sleep(ctx, wait)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		result, err := c.post(ctx, method, payload, files)
+		c.next = c.now().Add(time.Duration(messages) * c.Interval)
+		var limited *RateLimited
+		if !errors.As(err, &limited) || attempt > c.MaxRetries {
+			return result, err
+		}
+		wait := max(limited.RetryAfter, c.Interval)
+		c.next = c.now().Add(wait)
+		logger().Warn("Telegram rate limit; waiting", "method", method, "retry_after", wait, "attempt", attempt)
+	}
+}
+
+func (c *Client) now() time.Time {
+	if c.Now == nil {
+		return time.Now()
+	}
+	return c.Now()
+}
+
+func (c *Client) sleep(ctx context.Context, d time.Duration) {
+	if c.Sleep == nil {
+		netutil.Sleep(ctx, d)
+		return
+	}
+	c.Sleep(ctx, d)
+}
+
+func (c *Client) post(ctx context.Context, method string, payload map[string]any, files []attachment) (map[string]any, error) {
 	logger().Debug("Telegram request", "method", method)
 	var body bytes.Buffer
 	contentType := "application/json"
