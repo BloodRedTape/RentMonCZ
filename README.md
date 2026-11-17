@@ -113,17 +113,21 @@ The raw API response may contain contact details: the database is local and `dat
 
 ## Budget limits
 
-`SOLO_CHEAP_MAX_RENT_KC` is the strict base rent limit (default 13500).
-You can additionally set `SOLO_CHEAP_MAX_RENT_AND_UTILITIES_KC=17000` in `.env`: if **both** amounts are known, a listing passes only when `rent_kc + utilities_kc < SOLO_CHEAP_MAX_RENT_AND_UTILITIES_KC`. When utilities are unknown, the extra check is skipped; unknown rent is still rejected by the main filter. Commission and deposit are not included in the sum.
+Each category has a strict rent limit (`*_MAX_RENT_KC`) and an optional strict total limit (`*_MAX_RENT_AND_UTILITIES_KC`):
 
-If `SOLO_CHEAP_MAX_RENT_AND_UTILITIES_KC` is not set, the extra limit is disabled. The value must be a positive integer. When set, it also becomes the API price ceiling for the search, because the API price sometimes includes utilities; the exact rent and total checks run on extracted facts and do not require calling the LLM again when a limit changes.
+- if the total limit is set **and** utilities are known, only `rent_kc + utilities_kc < *_MAX_RENT_AND_UTILITIES_KC` is checked; the rent limit is ignored (e.g. 21,000 + 3,500 passes `#duo_cheap`);
+- otherwise (utilities unknown or no total limit) only `rent_kc < *_MAX_RENT_KC` is checked.
+
+Unknown rent is always rejected. Commission and deposit are not included in the sum.
+
+If `SOLO_CHEAP_MAX_RENT_AND_UTILITIES_KC` is not set, `#solo_cheap` uses only the rent limit (default 13500). The value must be a positive integer. When set, it also becomes the API price ceiling for the search, because the API price sometimes includes utilities; the exact rent and total checks run on extracted facts and do not require calling the LLM again when a limit changes.
 
 ## Categories
 
 Each listing is checked against every category; a message is sent once and ends with the hashtags of all matching categories (e.g. `#solo_cheap #duo_cheap`).
 
 - `#solo_cheap`: `SOLO_CHEAP_MAX_RENT_KC` and the optional `SOLO_CHEAP_MAX_RENT_AND_UTILITIES_KC`, any layout.
-- `#duo_cheap`: rent `< DUO_CHEAP_MAX_RENT_KC` (default 20001) and rent + utilities `< DUO_CHEAP_MAX_RENT_AND_UTILITIES_KC` (default 25001, skipped when utilities are unknown); layout 2+1, 3+kk or larger (Sreality `category_sub_cb` codes 5–12; atypical layouts are excluded).
+- `#duo_cheap`: `DUO_CHEAP_MAX_RENT_KC` (default 20001, used when utilities are unknown) and `DUO_CHEAP_MAX_RENT_AND_UTILITIES_KC` (default 25001); layout 2+1, 3+kk or larger (Sreality `category_sub_cb` codes 5–12; atypical layouts are excluded).
 
 Before the LLM, the API price is checked against each category's total limit (rent + utilities) when it has one, otherwise against its rent limit; the search uses the largest of these ceilings. Exact rent/total checks happen on extracted facts afterwards. Tags are recomputed when a sent message is edited. Changing the limits does not re-edit existing messages by itself.
 

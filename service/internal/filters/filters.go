@@ -29,13 +29,19 @@ func RentalRejection(rental domain.RentalDetails, category domain.Category) doma
 	if rent == nil {
 		return domain.UnknownRent
 	}
-	if !(*rent > 0 && *rent < float64(category.MaxRentKc)) {
+	if *rent <= 0 {
 		return domain.RentLimit
 	}
 	utilities := rental.Payments.UtilitiesKc
 	total := category.MaxRentAndUtilitiesKc
-	if total != nil && utilities != nil && *rent+*utilities >= float64(*total) {
-		return domain.RentAndUtilitiesLimit
+	if total != nil && utilities != nil {
+		if *rent+*utilities >= float64(*total) {
+			return domain.RentAndUtilitiesLimit
+		}
+		return ""
+	}
+	if *rent >= float64(category.MaxRentKc) {
+		return domain.RentLimit
 	}
 	return ""
 }

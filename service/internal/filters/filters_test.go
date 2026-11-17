@@ -32,6 +32,9 @@ func TestFilters(t *testing.T) {
 		{rental(testutil.F(12000), testutil.F(1999), false), &limit, ""},
 		{rental(testutil.F(12000), testutil.F(2000), false), &limit, domain.RentAndUtilitiesLimit},
 		{rental(testutil.F(12000), nil, false), &limit, ""},
+		{rental(testutil.F(13600), testutil.F(300), false), &limit, ""},
+		{rental(testutil.F(13600), nil, false), &limit, domain.RentLimit},
+		{rental(testutil.F(13600), testutil.F(300), false), nil, domain.RentLimit},
 		{rental(testutil.F(12000), testutil.F(99999), false), nil, ""},
 	}
 	for i, c := range cases {
@@ -70,6 +73,14 @@ func TestLayoutsAndTags(t *testing.T) {
 	r.Payments.UtilitiesKc = testutil.F(5001)
 	if tags := Tags(source, r, 72, categories); len(tags) != 0 {
 		t.Errorf("tags %v", tags)
+	}
+	r.Payments.RentKc, r.Payments.UtilitiesKc = testutil.F(21000), testutil.F(3500)
+	if RentalRejection(r, duo) != "" {
+		t.Error("21000 + 3500 must pass the duo total limit")
+	}
+	r.Payments.UtilitiesKc = nil
+	if RentalRejection(r, duo) != domain.RentLimit {
+		t.Error("21000 with unknown utilities must hit the duo rent limit")
 	}
 	price = 25000
 	if r := SourceRejection(source, 72, duo); r != "" {
